@@ -42,7 +42,7 @@ jobs:
           bandit -r api/ config/ core/ -ll -q -s B101
 
       - name: Container security scan with Trivy
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.29.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
