@@ -4,6 +4,8 @@
 提供时间转换和计算功能。
 """
 
+from typing import Optional, Tuple
+
 
 def minutes_to_time_str(minutes: float) -> str:
     """
@@ -103,9 +105,9 @@ def calculate_arrival_time(
 
 def is_within_time_window(
     arrival_time: float,
-    tw_earliest: float | None,
-    tw_latest: float | None,
-) -> tuple[bool, float]:
+    tw_earliest: Optional[float],
+    tw_latest: Optional[float],
+) -> Tuple[bool, float]:
     """
     检查到达时间是否在时间窗内。
 

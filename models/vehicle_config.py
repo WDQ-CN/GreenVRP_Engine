@@ -4,7 +4,7 @@
 存储可用的车型参数。
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -32,7 +32,7 @@ class VehicleConfig(Base):
     color: Mapped[str] = mapped_column(String(20), default="#1f77b4", comment="显示颜色")
 
     # 关联场景
-    scenarios: Mapped[list["Scenario"]] = relationship(back_populates="vehicle_config")
+    scenarios: Mapped[List["Scenario"]] = relationship(back_populates="vehicle_config")
 
     def __repr__(self) -> str:
         return f"<VehicleConfig(id={self.id}, name='{self.name}', capacity={self.capacity})>"
@@ -50,7 +50,30 @@ class VehicleConfig(Base):
 
 
 def get_default_vehicle_configs() -> dict:
-    """获取默认车型配置（引用 config/vehicles.py 避免数据重复）。"""
-    from config.vehicles import DEFAULT_VEHICLE_CONFIG
-
-    return DEFAULT_VEHICLE_CONFIG
+    """获取默认车型配置。"""
+    return {
+        "4.2m": {
+            "capacity": 800,
+            "fixed_cost": 200,
+            "fuel_per_100km": 12,
+            "speed_kmh": 40,
+            "count": 3,
+            "color": "#1f77b4",
+        },
+        "7.6m": {
+            "capacity": 1500,
+            "fixed_cost": 350,
+            "fuel_per_100km": 18,
+            "speed_kmh": 35,
+            "count": 2,
+            "color": "#2ca02c",
+        },
+        "9.6m": {
+            "capacity": 2500,
+            "fixed_cost": 500,
+            "fuel_per_100km": 25,
+            "speed_kmh": 30,
+            "count": 2,
+            "color": "#9467bd",
+        },
+    }

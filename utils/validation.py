@@ -4,13 +4,13 @@
 提供输入数据的验证功能。
 """
 
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from config.constants import DEFAULT_PARAMS
 from exceptions.errors import ValidationError
 
 
-def validate_customer(customer: dict[str, Any]) -> None:
+def validate_customer(customer: Dict[str, Any]) -> None:
     """
     验证客户数据。
 
@@ -100,7 +100,7 @@ def validate_customer(customer: dict[str, Any]) -> None:
             )
 
 
-def validate_customers(customers: list[dict[str, Any]]) -> None:
+def validate_customers(customers: List[Dict[str, Any]]) -> None:
     """
     验证客户列表。
 
@@ -122,10 +122,10 @@ def validate_customers(customers: list[dict[str, Any]]) -> None:
                 field=e.details.get("field"),
                 value=e.details.get("value"),
                 details={**e.details, "customer_index": i},
-            ) from e
+            )
 
 
-def validate_vehicle_config(vehicle_config: dict[str, Any]) -> None:
+def validate_vehicle_config(vehicle_config: Dict[str, Any]) -> None:
     """
     验证车型配置。
 
@@ -177,7 +177,7 @@ def validate_vehicle_config(vehicle_config: dict[str, Any]) -> None:
             )
 
 
-def validate_params(params: dict[str, Any]) -> dict[str, Any]:
+def validate_params(params: Dict[str, Any]) -> Dict[str, Any]:
     """
     验证全局参数并填充默认值。
 
@@ -221,10 +221,10 @@ def validate_params(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_solve_request(
-    customers: list[dict[str, Any]],
-    vehicle_config: dict[str, Any],
-    params: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+    customers: List[Dict[str, Any]],
+    vehicle_config: Dict[str, Any],
+    params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     验证求解请求。
 
@@ -242,6 +242,9 @@ def validate_solve_request(
     validate_customers(customers)
     validate_vehicle_config(vehicle_config)
 
-    params = validate_params(params) if params else DEFAULT_PARAMS.copy()
+    if params:
+        params = validate_params(params)
+    else:
+        params = DEFAULT_PARAMS.copy()
 
     return params

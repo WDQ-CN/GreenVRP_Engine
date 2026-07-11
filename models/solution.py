@@ -5,7 +5,7 @@
 """
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -25,7 +25,7 @@ class Solution(Base):
 
     # 关联场景
     scenario_id: Mapped[int] = mapped_column(
-        ForeignKey("scenarios.id"), nullable=False, index=True, comment="所属场景ID"
+        ForeignKey("scenarios.id"), nullable=False, comment="所属场景ID"
     )
     scenario: Mapped["Scenario"] = relationship(back_populates="solutions")
 
@@ -34,8 +34,8 @@ class Solution(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending", comment="任务状态")
 
     # 求解结果（JSON 存储）
-    solution_data: Mapped[dict | None] = mapped_column(JSON, comment="求解结果数据")
-    cost_data: Mapped[dict | None] = mapped_column(JSON, comment="成本数据")
+    solution_data: Mapped[Optional[dict]] = mapped_column(JSON, comment="求解结果数据")
+    cost_data: Mapped[Optional[dict]] = mapped_column(JSON, comment="成本数据")
 
     # 关键指标（便于查询和排序）
     total_distance: Mapped[float] = mapped_column(Float, default=0.0, comment="总距离（公里）")
@@ -47,11 +47,11 @@ class Solution(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc), comment="创建时间"
     )
-    started_at: Mapped[datetime | None] = mapped_column(DateTime, comment="开始时间")
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, comment="完成时间")
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, comment="开始时间")
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, comment="完成时间")
 
     # 错误信息
-    error_message: Mapped[str | None] = mapped_column(String(1000), comment="错误信息")
+    error_message: Mapped[Optional[str]] = mapped_column(String(1000), comment="错误信息")
 
     def __repr__(self) -> str:
         return f"<Solution(id={self.id}, job_id='{self.job_id}', status='{self.status}')>"

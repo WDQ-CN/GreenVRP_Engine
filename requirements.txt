@@ -19,7 +19,6 @@ uvicorn>=0.23.0
 
 # 数据验证
 pydantic>=2.0.0
-pydantic-settings>=2.14.2
 
 # 数据库 ORM
 sqlalchemy>=2.0.0
@@ -27,5 +26,9 @@ sqlalchemy>=2.0.0
 # HTTP 客户端（用于回调功能）
 httpx>=0.24.0
 
-# 安全约束：修复已知 CVE
-msgpack>=1.2.1
+# 安全增强
+slowapi>=0.1.9
+python-jose[cryptography]>=3.3.0
+
+# Redis 支持（生产环境任务管理器）
+redis>=4.5.0

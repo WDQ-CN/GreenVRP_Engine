@@ -5,7 +5,7 @@ API 响应模型定义
 """
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -19,8 +19,8 @@ class StopData(BaseModel):
     lat: float = Field(..., description="纬度")
     lon: float = Field(..., description="经度")
     demand: int = Field(default=0, description="需求量")
-    arrival_time: int | None = Field(default=None, description="到达时间（分钟）")
-    departure_time: int | None = Field(default=None, description="离开时间（分钟）")
+    arrival_time: Optional[int] = Field(default=None, description="到达时间（分钟）")
+    departure_time: Optional[int] = Field(default=None, description="离开时间（分钟）")
     service_time: int = Field(default=0, description="服务时间（分钟）")
     tw_earliest: int = Field(default=0, description="时间窗最早")
     tw_latest: int = Field(default=0, description="时间窗最晚")
@@ -35,7 +35,7 @@ class RouteData(BaseModel):
     vehicle_type: str = Field(..., description="车型")
     vehicle_color: str = Field(default="#1f77b4", description="颜色")
     capacity: int = Field(..., description="载重容量")
-    stops: list[StopData] = Field(default_factory=list, description="站点列表")
+    stops: List[StopData] = Field(default_factory=list, description="站点列表")
     distance_km: float = Field(default=0.0, description="行驶距离（公里）")
     total_demand: int = Field(default=0, description="总需求量")
     total_time_min: float = Field(default=0.0, description="总时间（分钟）")
@@ -45,9 +45,9 @@ class RouteData(BaseModel):
 class SolutionData(BaseModel):
     """求解结果数据。"""
 
-    routes: list[RouteData] = Field(default_factory=list, description="路线列表")
+    routes: List[RouteData] = Field(default_factory=list, description="路线列表")
     total_distance: float = Field(default=0.0, description="总距离（公里）")
-    vehicles_used: dict[str, int] = Field(default_factory=dict, description="各车型使用数量")
+    vehicles_used: Dict[str, int] = Field(default_factory=dict, description="各车型使用数量")
     total_late_minutes: int = Field(default=0, description="总迟到分钟数")
     solution_status: str = Field(default="UNKNOWN", description="求解状态")
     solve_time_seconds: float = Field(default=0.0, description="求解耗时（秒）")
@@ -68,7 +68,7 @@ class CostData(BaseModel):
     driving_time_min: float = Field(default=0.0, description="行驶时间")
     service_time_min: float = Field(default=0.0, description="服务时间")
     waiting_time_min: float = Field(default=0.0, description="等待时间")
-    cost_breakdown: dict[str, float] = Field(default_factory=dict, description="成本明细")
+    cost_breakdown: Dict[str, float] = Field(default_factory=dict, description="成本明细")
 
 
 class SolveResponse(BaseModel):
@@ -78,11 +78,11 @@ class SolveResponse(BaseModel):
     status: Literal["pending", "processing", "completed", "failed"] = Field(
         ..., description="任务状态"
     )
-    solution: SolutionData | None = Field(default=None, description="求解结果")
-    cost_result: CostData | None = Field(default=None, description="成本结果")
+    solution: Optional[SolutionData] = Field(default=None, description="求解结果")
+    cost_result: Optional[CostData] = Field(default=None, description="成本结果")
     created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
-    completed_at: datetime | None = Field(default=None, description="完成时间")
-    error_message: str | None = Field(default=None, description="错误信息")
+    completed_at: Optional[datetime] = Field(default=None, description="完成时间")
+    error_message: Optional[str] = Field(default=None, description="错误信息")
 
     model_config = {
         "json_schema_extra": {
@@ -117,11 +117,11 @@ class JobStatusResponse(BaseModel):
     status: Literal["pending", "processing", "completed", "failed"] = Field(
         ..., description="任务状态"
     )
-    progress: int | None = Field(default=None, ge=0, le=100, description="进度百分比")
-    message: str | None = Field(default=None, description="状态消息")
+    progress: Optional[int] = Field(default=None, ge=0, le=100, description="进度百分比")
+    message: Optional[str] = Field(default=None, description="状态消息")
     created_at: datetime = Field(..., description="创建时间")
-    started_at: datetime | None = Field(default=None, description="开始时间")
-    completed_at: datetime | None = Field(default=None, description="完成时间")
+    started_at: Optional[datetime] = Field(default=None, description="开始时间")
+    completed_at: Optional[datetime] = Field(default=None, description="完成时间")
 
 
 class ScenarioResponse(BaseModel):
@@ -129,24 +129,11 @@ class ScenarioResponse(BaseModel):
 
     id: int = Field(..., description="场景ID")
     name: str = Field(..., description="场景名称")
-    description: str | None = Field(default=None, description="场景描述")
+    description: Optional[str] = Field(default=None, description="场景描述")
     customer_count: int = Field(default=0, description="客户数量")
     solution_count: int = Field(default=0, description="求解结果数量")
     created_at: datetime = Field(..., description="创建时间")
-    updated_at: datetime | None = Field(default=None, description="更新时间")
-
-
-class ScenarioDetailResponse(BaseModel):
-    """场景详情响应模型，包含完整数据。"""
-
-    id: int = Field(..., description="场景ID")
-    name: str = Field(..., description="场景名称")
-    description: str | None = Field(default=None, description="场景描述")
-    customers: list[dict[str, Any]] = Field(default_factory=list, description="客户数据")
-    vehicle_config: dict[str, dict[str, Any]] | None = Field(default=None, description="车型配置")
-    params: dict[str, Any] | None = Field(default=None, description="求解参数")
-    created_at: datetime = Field(..., description="创建时间")
-    updated_at: datetime | None = Field(default=None, description="更新时间")
+    updated_at: Optional[datetime] = Field(default=None, description="更新时间")
 
 
 class HealthResponse(BaseModel):
@@ -155,6 +142,6 @@ class HealthResponse(BaseModel):
     status: Literal["healthy", "unhealthy"] = Field(..., description="健康状态")
     version: str = Field(default="2.0.0", description="API版本")
     timestamp: datetime = Field(default_factory=datetime.now, description="时间戳")
-    components: dict[str, str] = Field(
+    components: Dict[str, str] = Field(
         default_factory=lambda: {"database": "ok", "solver": "ok"}, description="组件状态"
     )

@@ -4,7 +4,7 @@
 定义项目中使用的异常类型。
 """
 
-from typing import Any
+from typing import Any, Dict, Optional
 
 
 class GreenVRPError(Exception):
@@ -22,15 +22,15 @@ class GreenVRPError(Exception):
     def __init__(
         self,
         message: str,
-        error_code: str | None = None,
-        details: dict[str, Any] | None = None,
+        error_code: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(message)
         self.message = message
         self.error_code = error_code or "GREENVRP_ERROR"
         self.details = details or {}
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
         return {
             "error": self.error_code,
@@ -49,8 +49,8 @@ class SolverError(GreenVRPError):
     def __init__(
         self,
         message: str,
-        error_code: str | None = None,
-        details: dict[str, Any] | None = None,
+        error_code: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(
             message,
@@ -69,9 +69,9 @@ class ValidationError(GreenVRPError):
     def __init__(
         self,
         message: str,
-        field: str | None = None,
-        value: Any | None = None,
-        details: dict[str, Any] | None = None,
+        field: Optional[str] = None,
+        value: Optional[Any] = None,
+        details: Optional[Dict[str, Any]] = None,
     ):
         error_details = details or {}
         if field:
@@ -95,8 +95,8 @@ class ConfigurationError(GreenVRPError):
     def __init__(
         self,
         message: str,
-        config_key: str | None = None,
-        details: dict[str, Any] | None = None,
+        config_key: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
     ):
         error_details = details or {}
         if config_key:
@@ -118,11 +118,11 @@ class DistanceCalculationError(GreenVRPError):
     def __init__(
         self,
         message: str,
-        lat1: float | None = None,
-        lon1: float | None = None,
-        lat2: float | None = None,
-        lon2: float | None = None,
-        details: dict[str, Any] | None = None,
+        lat1: Optional[float] = None,
+        lon1: Optional[float] = None,
+        lat2: Optional[float] = None,
+        lon2: Optional[float] = None,
+        details: Optional[Dict[str, Any]] = None,
     ):
         error_details = details or {}
         if lat1 is not None:
@@ -150,8 +150,8 @@ class CostCalculationError(GreenVRPError):
     def __init__(
         self,
         message: str,
-        cost_type: str | None = None,
-        details: dict[str, Any] | None = None,
+        cost_type: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
     ):
         error_details = details or {}
         if cost_type:
@@ -173,8 +173,8 @@ class TrackingError(GreenVRPError):
     def __init__(
         self,
         message: str,
-        vehicle_id: int | None = None,
-        details: dict[str, Any] | None = None,
+        vehicle_id: Optional[int] = None,
+        details: Optional[Dict[str, Any]] = None,
     ):
         error_details = details or {}
         if vehicle_id is not None:
@@ -196,7 +196,7 @@ class JobNotFoundError(GreenVRPError):
     def __init__(
         self,
         job_id: str,
-        details: dict[str, Any] | None = None,
+        details: Optional[Dict[str, Any]] = None,
     ):
         error_details = details or {}
         error_details["job_id"] = job_id
@@ -218,7 +218,7 @@ class JobTimeoutError(GreenVRPError):
         self,
         job_id: str,
         timeout_seconds: float,
-        details: dict[str, Any] | None = None,
+        details: Optional[Dict[str, Any]] = None,
     ):
         error_details = details or {}
         error_details["job_id"] = job_id
@@ -228,18 +228,3 @@ class JobTimeoutError(GreenVRPError):
             "JOB_TIMEOUT",
             error_details,
         )
-
-
-class ServiceUnavailableError(GreenVRPError):
-    """
-    服务不可用错误。
-
-    当服务处于关闭中或资源已达上限（如后台任务数已满）时抛出。
-    """
-
-    def __init__(
-        self,
-        message: str,
-        details: dict[str, Any] | None = None,
-    ):
-        super().__init__(message, "SERVICE_UNAVAILABLE", details)

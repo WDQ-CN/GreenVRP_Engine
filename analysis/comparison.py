@@ -5,7 +5,7 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -17,13 +17,13 @@ import plotly.graph_objects as go
 class ComparisonResult:
     """场景对比结果数据类。"""
 
-    scenarios: list[str]
+    scenarios: List[str]
     """场景名称列表"""
 
-    metrics: dict[str, list[float]]
+    metrics: Dict[str, List[float]]
     """各指标的值列表，key为指标名，value为各场景的值"""
 
-    rankings: dict[str, list[int]]
+    rankings: Dict[str, List[int]]
     """各指标的排名，1为最优"""
 
     best_scenario: str
@@ -32,10 +32,10 @@ class ComparisonResult:
     summary: pd.DataFrame
     """汇总数据表"""
 
-    tradeoffs: list[dict[str, Any]] = field(default_factory=list)
+    tradeoffs: List[Dict[str, Any]] = field(default_factory=list)
     """权衡分析结果"""
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
         return {
             "scenarios": self.scenarios,
@@ -87,7 +87,7 @@ class ScenarioComparison:
 
     def __init__(
         self,
-        metric_weights: dict[str, float] | None = None,
+        metric_weights: Optional[Dict[str, float]] = None,
     ):
         """
         初始化对比分析器。
@@ -102,8 +102,8 @@ class ScenarioComparison:
 
     def compare_solutions(
         self,
-        solutions: list[dict[str, Any]],
-        scenario_names: list[str] | None = None,
+        solutions: List[Dict[str, Any]],
+        scenario_names: Optional[List[str]] = None,
     ) -> ComparisonResult:
         """
         对比多个求解结果。
@@ -117,7 +117,7 @@ class ScenarioComparison:
         """
         # 生成场景名称
         if scenario_names is None:
-            scenario_names = [f"场景{i + 1}" for i in range(len(solutions))]
+            scenario_names = [f"场景{i+1}" for i in range(len(solutions))]
 
         # 提取指标数据
         metrics_data = {metric: [] for metric in COMPARISON_METRICS}
@@ -185,7 +185,7 @@ class ScenarioComparison:
             tradeoffs=tradeoffs,
         )
 
-    def _calculate_composite_scores(self, metrics_data: dict[str, list[float]]) -> list[float]:
+    def _calculate_composite_scores(self, metrics_data: Dict[str, List[float]]) -> List[float]:
         """
         计算综合得分（加权归一化）。
 
@@ -214,9 +214,9 @@ class ScenarioComparison:
 
     def _analyze_tradeoffs(
         self,
-        metrics_data: dict[str, list[float]],
-        scenario_names: list[str],
-    ) -> list[dict[str, Any]]:
+        metrics_data: Dict[str, List[float]],
+        scenario_names: List[str],
+    ) -> List[Dict[str, Any]]:
         """
         分析场景间的权衡关系。
 
@@ -303,21 +303,21 @@ class ScenarioComparison:
             )
 
         fig.update_layout(
-            title={"text": title, "font": {"size": 18}},
-            polar={
-                "radialaxis": {
-                    "visible": True,
-                    "range": [0, 100],
-                }
-            },
+            title=dict(text=title, font=dict(size=18)),
+            polar=dict(
+                radialaxis=dict(
+                    visible=True,
+                    range=[0, 100],
+                )
+            ),
             showlegend=True,
-            legend={
-                "orientation": "h",
-                "yanchor": "bottom",
-                "y": 1.02,
-                "xanchor": "center",
-                "x": 0.5,
-            },
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="center",
+                x=0.5,
+            ),
             height=500,
         )
 
@@ -327,7 +327,7 @@ class ScenarioComparison:
         self,
         result: ComparisonResult,
         metric: str = "total_cost",
-        title: str | None = None,
+        title: Optional[str] = None,
     ) -> go.Figure:
         """
         生成柱状图对比单个指标。
@@ -373,12 +373,12 @@ class ScenarioComparison:
         )
 
         fig.update_layout(
-            title={"text": title, "font": {"size": 16}},
+            title=dict(text=title, font=dict(size=16)),
             xaxis_title="场景",
             yaxis_title=f"{metric_name} ({unit})",
             height=400,
             plot_bgcolor="white",
-            margin={"t": 80},
+            margin=dict(t=80),
         )
 
         return fig
@@ -413,7 +413,7 @@ class ScenarioComparison:
                     [0.5, "#ffbb33"],  # 中间 - 黄色
                     [1, "#d62728"],  # 排名靠后 - 红色
                 ],
-                colorbar={"title": "排名"},
+                colorbar=dict(title="排名"),
                 text=[[str(r) for r in row] for row in ranking_matrix],
                 texttemplate="%{text}",
                 textfont={"size": 14},
@@ -421,7 +421,7 @@ class ScenarioComparison:
         )
 
         fig.update_layout(
-            title={"text": title, "font": {"size": 16}},
+            title=dict(text=title, font=dict(size=16)),
             xaxis_title="场景",
             yaxis_title="指标",
             height=350,

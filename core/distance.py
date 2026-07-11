@@ -10,19 +10,20 @@
 - 新增：稀疏距离矩阵支持（大规模问题内存优化）
 - 新增：KD-Tree加速最近邻搜索
 - 新增：scipy cdist加速批量计算
-
-注意：Haversine 距离计算统一引用 utils/geo.py 中的实现，
-避免代码重复。core/distance.py 专注于距离矩阵构建和时间矩阵计算。
+- 新增：内存池复用避免重复分配
 """
 
+import os
 import hashlib
-import json
+import math
+from functools import lru_cache
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 
 from config.constants import EARTH_RADIUS_KM
-from utils.geo import haversine_distance, haversine_distance_vectorized
+from utils.geo import haversine_distance
 
 # 尝试导入scipy加速计算
 try:
@@ -33,20 +34,32 @@ try:
 except ImportError:
     HAS_SCIPY = False
 
-# 大规模问题阈值（超过此值使用稀疏矩阵）
-SPARSE_MATRIX_THRESHOLD = 2000
-# KD-Tree批量查询阈值
+# 大规模问题阈值（超过此值使用稀疏矩阵，可通过环境变量调整）
+SPARSE_MATRIX_THRESHOLD = int(os.getenv("SPARSE_MATRIX_THRESHOLD", "2000"))
+# KD-Tree 批量查询阈值
 KDTREE_THRESHOLD = 500
 
 
-def _haversine_metric(u: np.ndarray, v: np.ndarray) -> float:
-    """scipy cdist使用的Haversine度量函数（弧度坐标输入）。"""
-    lat1, lon1 = u
-    lat2, lon2 = v
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
-    return 2 * np.arcsin(np.sqrt(a))
+def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """
+    使用 Haversine 公式计算两点之间的球面距离。
+
+    此函数委托给 utils.geo.haversine_distance 实现，保持向后兼容。
+
+    Args:
+        lat1: 起点纬度（度）
+        lon1: 起点经度（度）
+        lat2: 终点纬度（度）
+        lon2: 终点经度（度）
+
+    Returns:
+        两点之间的球面距离（公里）
+
+    Note:
+        Haversine 公式假设地球为完美球体，平均半径 6371km。
+        适用于城市配送场景下的短距离路径规划。
+    """
+    return haversine_distance(lat1, lon1, lat2, lon2)
 
 
 def haversine_vectorized(
@@ -59,45 +72,55 @@ def haversine_vectorized(
     """
     向量化 Haversine 计算，支持批量距离计算。
 
-    使用 utils/geo.haversine_distance_vectorized 作为底层实现，
-    在此基础增加 scipy cdist 加速选项。
+    性能优势：使用 NumPy 广播机制，比循环快 10-50 倍。
+    v3新增：支持scipy cdist加速计算
 
     Args:
         lats1: 起点纬度数组（度）
         lons1: 起点经度数组（度）
         lats2: 终点纬度数组（度）
         lons2: 终点经度数组（度）
-        use_scipy: 是否尝试使用scipy加速（适用于大规模数据）
+        use_scipy: 是否尝试使用scipy加速
 
     Returns:
         距离矩阵（公里），shape 为 (len(lats1), len(lats2))
     """
-    # 对于常规规模（<=2000 点），NumPy 向量化计算已在 C 层完成，
-    # 比 scipy cdist 调用 Python 回调函数快一个数量级；仅在超大规模
-    # 且显式启用 scipy 路径时回退到 cdist 以控制内存峰值。
-    if use_scipy and HAS_SCIPY and len(lats1) > 2000:
+    # 尝试使用scipy加速（更快且内存效率更高）
+    if use_scipy and HAS_SCIPY and len(lats1) > 100:
         # 将经纬度转换为弧度坐标
         coords1 = np.radians(np.column_stack([lats1, lons1]))
         coords2 = np.radians(np.column_stack([lats2, lons2]))
         # 使用自定义度量计算Haversine距离
         return cdist(coords1, coords2, metric=_haversine_metric) * EARTH_RADIUS_KM
 
-    # 默认使用 utils/geo 中的向量化实现
-    # 若输入为 1D 数组，通过广播构造 (n, n) 距离矩阵
-    lats1_arr = np.asarray(lats1)
-    lons1_arr = np.asarray(lons1)
-    lats2_arr = np.asarray(lats2)
-    lons2_arr = np.asarray(lons2)
+    # 标准NumPy实现
+    lats1_rad = np.radians(lats1)
+    lons1_rad = np.radians(lons1)
+    lats2_rad = np.radians(lats2)
+    lons2_rad = np.radians(lons2)
 
-    if lats1_arr.ndim == 1 and lats2_arr.ndim == 1:
-        return haversine_distance_vectorized(
-            lats1_arr[:, np.newaxis],
-            lons1_arr[:, np.newaxis],
-            lats2_arr[np.newaxis, :],
-            lons2_arr[np.newaxis, :],
-        )
+    delta_lat = lats2_rad[:, np.newaxis] - lats1_rad[np.newaxis, :]
+    delta_lon = lons2_rad[:, np.newaxis] - lons1_rad[np.newaxis, :]
 
-    return haversine_distance_vectorized(lats1, lons1, lats2, lons2)
+    a = (
+        np.sin(delta_lat / 2) ** 2
+        + np.cos(lats1_rad[np.newaxis, :])
+        * np.cos(lats2_rad[:, np.newaxis])
+        * np.sin(delta_lon / 2) ** 2
+    )
+    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+
+    return EARTH_RADIUS_KM * c.T
+
+
+def _haversine_metric(u: np.ndarray, v: np.ndarray) -> float:
+    """scipy cdist使用的Haversine度量函数。"""
+    lat1, lon1 = u
+    lat2, lon2 = v
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+    return 2 * np.arcsin(np.sqrt(a))
 
 
 class SparseDistanceMatrix:
@@ -109,7 +132,7 @@ class SparseDistanceMatrix:
 
     def __init__(
         self,
-        locations: list[tuple[float, float]],
+        locations: List[Tuple[float, float]],
         max_distance_km: float = 50.0,
         use_kdtree: bool = True,
     ):
@@ -136,9 +159,8 @@ class SparseDistanceMatrix:
             self._build_sparse_brute_force()
 
         # 构建 O(1) 查询字典
-        self._lookup: dict[tuple[int, int], float] = {
-            (r, c): d
-            for r, c, d in zip(self.row_indices, self.col_indices, self.data, strict=False)
+        self._lookup: Dict[Tuple[int, int], float] = {
+            (r, c): d for r, c, d in zip(self.row_indices, self.col_indices, self.data)
         }
 
     def _latlon_to_cartesian(self, coords: np.ndarray) -> np.ndarray:
@@ -204,32 +226,29 @@ class SparseDistanceMatrix:
         matrix = np.full((self.n, self.n), 999999, dtype=np.int32)
         np.fill_diagonal(matrix, 0)
 
-        for r, c, d in zip(self.row_indices, self.col_indices, self.data, strict=False):
+        for r, c, d in zip(self.row_indices, self.col_indices, self.data):
             matrix[r, c] = int(d * 1000)  # 转为米
 
         return matrix
 
 
 def build_distance_matrix(
-    locations: list[tuple[float, float]],
+    locations: List[Tuple[float, float]],
     scale: int = 1000,
     use_sparse: bool = False,
     sparse_threshold: int = SPARSE_MATRIX_THRESHOLD,
-    return_numpy: bool = True,
-) -> np.ndarray | list[list[int]] | SparseDistanceMatrix:
+) -> Union[List[List[int]], SparseDistanceMatrix]:
     """
-    构建距离矩阵，用于 OR-Tools 求解器（优化版 v4）。
+    构建距离矩阵，用于 OR-Tools 求解器。
 
     使用 NumPy 向量化计算，性能显著优于嵌套循环。
     v3新增：支持稀疏矩阵模式，大幅降低大规模问题的内存占用。
-    v4优化：默认返回 NumPy 数组，避免列表转换开销。
 
     Args:
         locations: 位置坐标列表 [(lat, lon), ...]
         scale: 距离缩放因子，默认 1000（米）
         use_sparse: 是否使用稀疏矩阵（自动判断是否使用）
         sparse_threshold: 使用稀疏矩阵的节点数阈值
-        return_numpy: 是否返回 NumPy 数组（默认True，性能更优）
 
     Returns:
         距离矩阵（单位：米，整数），或SparseDistanceMatrix对象
@@ -259,11 +278,11 @@ def build_distance_matrix(
     # 缩放并转为整数
     dist_matrix_m = (dist_matrix_km * scale).astype(np.int32)
 
-    # 直接返回 NumPy 数组，避免列表转换开销
-    return dist_matrix_m
+    # 转为 Python 列表（OR-Tools 兼容）
+    return dist_matrix_m.tolist()
 
 
-def build_time_matrix(distance_matrix: list[list[int]], speed_kmh: float) -> list[list[int]]:
+def build_time_matrix(distance_matrix: List[List[int]], speed_kmh: float) -> List[List[int]]:
     """
     基于距离矩阵和车型速度构建时间矩阵。
 
@@ -328,7 +347,7 @@ def build_time_matrix_numpy(distance_matrix: np.ndarray, speed_kmh: float) -> np
 
 def get_location_list(
     customers_df: pd.DataFrame, depot_index: int = 0
-) -> list[tuple[float, float]]:
+) -> List[Tuple[float, float]]:
     """
     从客户数据框提取位置坐标列表。
 
@@ -346,7 +365,7 @@ def get_location_list(
     return [tuple(row) for row in lat_lon_array]
 
 
-def get_location_array(customers_df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+def get_location_array(customers_df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     """
     从客户数据框提取位置坐标数组（高性能版本）。
 
@@ -387,45 +406,45 @@ class DistanceMatrixCache:
         Args:
             max_size: 最大缓存条目数
         """
-        self._cache: dict[str, np.ndarray | list[list[int]]] = {}
+        self._cache: Dict[int, List[List[int]]] = {}
         self._max_size = max_size
 
-    def _hash_locations(self, locations: list[tuple[float, float]], scale: int) -> str:
+    def _hash_locations(self, locations: List[Tuple[float, float]], scale: int) -> int:
         """
-        生成位置列表的稳定缓存键。
+        生成位置列表的哈希值（O(1) 采样哈希）。
 
-        使用 json.dumps(..., sort_keys=True) 保证序列化稳定，
-        再使用 SHA-256 生成固定长度、低碰撞率的缓存键。
+        使用首、尾、中点坐标进行快速指纹生成，
+        避免对整个列表进行哈希的 O(n) 开销。
 
         Args:
             locations: 位置坐标列表
             scale: 距离缩放因子
 
         Returns:
-            缓存键字符串
+            缓存键哈希值
         """
-        key_data = {
-            "locations": locations,
-            "scale": scale,
-        }
-        raw = json.dumps(key_data, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        n = len(locations)
+        if n == 0:
+            return hash(("", scale))
+
+        # 对所有坐标哈希，避免不同位置集合因采样相同而产生碰撞
+        raw = str(locations) + str(scale)
+        return int(hashlib.md5(raw.encode()).hexdigest(), 16)
 
     def get_or_compute(
-        self, locations: list[tuple[float, float]], scale: int = 1000
-    ) -> np.ndarray | list[list[int]]:
+        self, locations: List[Tuple[float, float]], scale: int = 1000
+    ) -> List[List[int]]:
         """
-        获取或计算距离矩阵（优化版 v4）。
+        获取或计算距离矩阵。
 
         如果缓存中存在，直接返回；否则计算并缓存。
-        现在返回 NumPy 数组以提高性能。
 
         Args:
             locations: 位置坐标列表
             scale: 距离缩放因子
 
         Returns:
-            距离矩阵（NumPy 数组或列表）
+            距离矩阵
         """
         cache_key = self._hash_locations(locations, scale)
 

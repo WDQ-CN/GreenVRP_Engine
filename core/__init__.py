@@ -8,12 +8,9 @@
 - 成本核算：向量化计算、车型参数缓存
 """
 
-from config.constants import DIESEL_CO2_FACTOR
-from config.vehicles import DEFAULT_VEHICLE_CONFIG
-from utils.geo import haversine_distance as haversine
-
 from .cost import (
     DEFAULT_CARBON_PRICE,
+    DIESEL_CO2_FACTOR,
     calculate_cost_efficiency_metrics,
     calculate_green_cost,
     calculate_green_cost_batch,
@@ -26,9 +23,11 @@ from .distance import (
     build_time_matrix_numpy,
     get_location_array,
     get_location_list,
+    haversine,
     haversine_vectorized,
 )
 from .solver import (
+    DEFAULT_VEHICLE_CONFIG,
     GreenVRPSolver,
     solve_with_multiple_strategies,
     solve_with_multiple_strategies_parallel,

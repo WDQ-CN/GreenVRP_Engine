@@ -7,7 +7,7 @@
 import logging
 import sys
 from datetime import datetime
-from typing import Any
+from typing import Any, Dict, Optional
 
 # 默认日志格式
 DEFAULT_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -16,10 +16,10 @@ DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 def setup_logging(
     level: str = "INFO",
-    log_file: str | None = None,
+    log_file: Optional[str] = None,
     log_format: str = DEFAULT_LOG_FORMAT,
     date_format: str = DEFAULT_DATE_FORMAT,
-    module_levels: dict[str, str] | None = None,
+    module_levels: Optional[Dict[str, str]] = None,
 ) -> None:
     """
     配置应用程序日志。
@@ -75,7 +75,7 @@ class ContextFilter(logging.Filter):
     上下文过滤器，为日志记录添加额外信息。
     """
 
-    def __init__(self, context: dict[str, Any] | None = None):
+    def __init__(self, context: Optional[Dict[str, Any]] = None):
         super().__init__()
         self.context = context or {}
 
@@ -141,7 +141,7 @@ class JsonFormatter(logging.Formatter):
 
 def setup_json_logging(
     level: str = "INFO",
-    log_file: str | None = None,
+    log_file: Optional[str] = None,
 ) -> None:
     """
     配置 JSON 格式的日志输出。

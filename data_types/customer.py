@@ -5,7 +5,7 @@
 """
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -28,12 +28,12 @@ class Customer:
     lat: float
     lon: float
     demand: float = 0.0
-    name: str | None = None
+    name: Optional[str] = None
     service_time_min: float = 0.0
-    tw_earliest: float | None = None
-    tw_latest: float | None = None
+    tw_earliest: Optional[float] = None
+    tw_latest: Optional[float] = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
         result = {
             "id": self.id,
@@ -52,7 +52,7 @@ class Customer:
         return result
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Customer":
+    def from_dict(cls, data: Dict[str, Any]) -> "Customer":
         """从字典创建实例。"""
         return cls(
             id=data["id"],
@@ -67,10 +67,10 @@ class Customer:
 
 
 # 客户列表类型别名
-CustomerList = list[Customer]
+CustomerList = List[Customer]
 
 
-def dict_to_customers(data: list[dict[str, Any]]) -> CustomerList:
+def dict_to_customers(data: List[Dict[str, Any]]) -> CustomerList:
     """
     将字典列表转换为 Customer 列表。
 
@@ -83,7 +83,7 @@ def dict_to_customers(data: list[dict[str, Any]]) -> CustomerList:
     return [Customer.from_dict(item) for item in data]
 
 
-def customers_to_dict(customers: CustomerList) -> list[dict[str, Any]]:
+def customers_to_dict(customers: CustomerList) -> List[Dict[str, Any]]:
     """
     将 Customer 列表转换为字典列表。
 

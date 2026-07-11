@@ -6,8 +6,8 @@
 
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -19,31 +19,31 @@ import plotly.graph_objects as go
 class EvaluationResult:
     """策略评估结果数据类。"""
 
-    strategies: list[str]
+    strategies: List[str]
     """策略名称列表"""
 
-    time_limits: list[int]
+    time_limits: List[int]
     """时间限制列表"""
 
-    results_matrix: dict[str, list[dict[str, Any]]]
+    results_matrix: Dict[str, List[Dict[str, Any]]]
     """策略 x 时间限制的结果矩阵"""
 
-    performance_metrics: dict[str, dict[str, float]]
+    performance_metrics: Dict[str, Dict[str, float]]
     """各策略的性能指标"""
 
     best_strategy: str
     """最优策略"""
 
-    stability_scores: dict[str, float]
+    stability_scores: Dict[str, float]
     """各策略的稳定性分数"""
 
     summary: pd.DataFrame
     """汇总数据表"""
 
-    recommendations: list[str]
+    recommendations: List[str]
     """策略推荐建议"""
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
         return {
             "strategies": self.strategies,
@@ -114,9 +114,9 @@ class StrategyEvaluator:
     def __init__(
         self,
         solver_func,
-        customers: list[dict[str, Any]],
-        vehicle_config: dict[str, dict[str, Any]],
-        params: dict[str, float],
+        customers: List[Dict[str, Any]],
+        vehicle_config: Dict[str, Dict[str, Any]],
+        params: Dict[str, float],
     ):
         """
         初始化策略评估器。
@@ -134,8 +134,8 @@ class StrategyEvaluator:
 
     def evaluate_strategies(
         self,
-        strategies: list[str] | None = None,
-        time_limits: list[int] | None = None,
+        strategies: Optional[List[str]] = None,
+        time_limits: Optional[List[int]] = None,
         num_runs: int = 3,
         parallel: bool = True,
     ) -> EvaluationResult:
@@ -191,11 +191,11 @@ class StrategyEvaluator:
 
     def _run_evaluation(
         self,
-        strategies: list[str],
-        time_limits: list[int],
+        strategies: List[str],
+        time_limits: List[int],
         num_runs: int,
         parallel: bool,
-    ) -> dict[str, list[dict[str, Any]]]:
+    ) -> Dict[str, List[Dict[str, Any]]]:
         """
         执行策略评估。
         """
@@ -203,7 +203,7 @@ class StrategyEvaluator:
 
         for strategy in strategies:
             strategy_results = []
-            DEFAULT_STRATEGIES.get(strategy, {})
+            strategy_config = DEFAULT_STRATEGIES.get(strategy, {})
 
             for time_limit in time_limits:
                 run_results = []
@@ -224,15 +224,15 @@ class StrategyEvaluator:
                             try:
                                 result = future.result()
                                 run_results.append(result)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                print(f"运行失败: {e}")
                 else:
                     for run in range(num_runs):
                         try:
                             result = self._run_single_evaluation(strategy, time_limit, run)
                             run_results.append(result)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"运行失败 (策略 {strategy}, 时间 {time_limit}): {e}")
 
                 # 汇总多次运行结果
                 if run_results:
@@ -250,12 +250,12 @@ class StrategyEvaluator:
         strategy: str,
         time_limit: int,
         run: int,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         执行单次评估。
         """
         strategy_config = DEFAULT_STRATEGIES.get(strategy, {})
-        strategy_config.get("strategies", ["PATH_CHEAPEST_ARC"])
+        solver_strategies = strategy_config.get("strategies", ["PATH_CHEAPEST_ARC"])
 
         # 修改参数
         eval_params = self.params.copy()
@@ -282,8 +282,8 @@ class StrategyEvaluator:
 
     def _aggregate_run_results(
         self,
-        run_results: list[dict[str, Any]],
-    ) -> dict[str, Any]:
+        run_results: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
         """
         汇总多次运行结果。
         """
@@ -317,9 +317,9 @@ class StrategyEvaluator:
 
     def _calculate_performance_metrics(
         self,
-        results_matrix: dict[str, list[dict[str, Any]]],
-        strategies: list[str],
-    ) -> dict[str, dict[str, float]]:
+        results_matrix: Dict[str, List[Dict[str, Any]]],
+        strategies: List[str],
+    ) -> Dict[str, Dict[str, float]]:
         """
         计算各策略的性能指标。
         """
@@ -359,9 +359,9 @@ class StrategyEvaluator:
 
     def _calculate_stability(
         self,
-        results_matrix: dict[str, list[dict[str, Any]]],
-        strategies: list[str],
-    ) -> dict[str, float]:
+        results_matrix: Dict[str, List[Dict[str, Any]]],
+        strategies: List[str],
+    ) -> Dict[str, float]:
         """
         计算各策略的稳定性分数。
 
@@ -392,8 +392,8 @@ class StrategyEvaluator:
 
     def _determine_best_strategy(
         self,
-        performance_metrics: dict[str, dict[str, float]],
-        stability_scores: dict[str, float],
+        performance_metrics: Dict[str, Dict[str, float]],
+        stability_scores: Dict[str, float],
     ) -> str:
         """
         确定最优策略。
@@ -418,9 +418,9 @@ class StrategyEvaluator:
 
     def _build_summary_table(
         self,
-        strategies: list[str],
-        performance_metrics: dict[str, dict[str, float]],
-        stability_scores: dict[str, float],
+        strategies: List[str],
+        performance_metrics: Dict[str, Dict[str, float]],
+        stability_scores: Dict[str, float],
     ) -> pd.DataFrame:
         """
         构建汇总表。
@@ -446,10 +446,10 @@ class StrategyEvaluator:
 
     def _generate_recommendations(
         self,
-        strategies: list[str],
-        performance_metrics: dict[str, dict[str, float]],
-        stability_scores: dict[str, float],
-    ) -> list[str]:
+        strategies: List[str],
+        performance_metrics: Dict[str, Dict[str, float]],
+        stability_scores: Dict[str, float],
+    ) -> List[str]:
         """
         生成策略推荐建议。
         """
@@ -492,7 +492,7 @@ class StrategyEvaluator:
         self,
         result: EvaluationResult,
         metric: str = "total_cost",
-        title: str | None = None,
+        title: Optional[str] = None,
     ) -> go.Figure:
         """
         生成策略对比柱状图。
@@ -514,7 +514,7 @@ class StrategyEvaluator:
         errors = []
         colors = px.colors.qualitative.Plotly
 
-        for _i, strategy in enumerate(result.strategies):
+        for i, strategy in enumerate(result.strategies):
             config = DEFAULT_STRATEGIES.get(strategy, {})
             metrics = result.performance_metrics.get(strategy, {})
 
@@ -536,11 +536,11 @@ class StrategyEvaluator:
             go.Bar(
                 x=strategy_names,
                 y=values,
-                error_y={
-                    "type": "data",
-                    "array": errors,
-                    "visible": True,
-                },
+                error_y=dict(
+                    type="data",
+                    array=errors,
+                    visible=True,
+                ),
                 marker_color=colors[: len(strategy_names)],
                 text=[f"{v:.1f}" for v in values],
                 textposition="outside",
@@ -548,7 +548,7 @@ class StrategyEvaluator:
         )
 
         fig.update_layout(
-            title={"text": title, "font": {"size": 16}},
+            title=dict(text=title, font=dict(size=16)),
             xaxis_title="策略",
             yaxis_title=metric,
             height=400,
@@ -597,13 +597,13 @@ class StrategyEvaluator:
             )
 
         fig.update_layout(
-            title={"text": title, "font": {"size": 16}},
-            polar={
-                "radialaxis": {
-                    "visible": True,
-                    "range": [0, 100],
-                }
-            },
+            title=dict(text=title, font=dict(size=16)),
+            polar=dict(
+                radialaxis=dict(
+                    visible=True,
+                    range=[0, 100],
+                )
+            ),
             showlegend=True,
             height=500,
         )
@@ -640,13 +640,13 @@ class StrategyEvaluator:
                     y=costs,
                     mode="lines+markers",
                     name=config.get("name", strategy),
-                    marker={"size": 10, "color": colors[i % len(colors)]},
-                    line={"width": 2},
+                    marker=dict(size=10, color=colors[i % len(colors)]),
+                    line=dict(width=2),
                 )
             )
 
         fig.update_layout(
-            title={"text": title, "font": {"size": 16}},
+            title=dict(text=title, font=dict(size=16)),
             xaxis_title="求解时间 (秒)",
             yaxis_title="总成本 (元)",
             height=450,
@@ -708,10 +708,10 @@ class StrategyEvaluator:
         )
 
         fig.update_layout(
-            title={"text": title, "font": {"size": 16}},
+            title=dict(text=title, font=dict(size=16)),
             xaxis_title="策略",
             yaxis_title="稳定性分数",
-            yaxis={"range": [0, 105]},
+            yaxis=dict(range=[0, 105]),
             height=400,
             plot_bgcolor="white",
         )

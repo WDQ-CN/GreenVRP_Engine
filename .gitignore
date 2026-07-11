@@ -1,61 +1,52 @@
-# Virtual environment
-.venv/
-.env/
-venv/
-env/
-
 # Python cache
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.Python
 
-# IDE and editor
-.idea/
-.claude/
-.vscode/
-.sublime-project
-.sublime-workspace
-*.swp
-*.swo
-*~
-
-# Testing
-.pytest_cache/
-.tox/
-.coverage
-htmlcov/
-coverage.xml
-junit.xml
-
-# Build artifacts
-*.egg-info/
-dist/
-build/
-*.egg
+# Virtual environments
+venv/
+.venv/
+env/
 
 # Logs
 *.log
-logs/
-
-# OS files
-.DS_Store
-Thumbs.db
-desktop.ini
 
 # Environment variables
+.env
 .env.local
-.env.*.local
+*.env.*
+
+# Coverage reports
+.coverage
+htmlcov/
+coverage/
+
+# IDE specific
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+target/
+*.egg-info/
+
+# Test & quality cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
 
 # Database
 *.db
 *.sqlite
 
-# Backup files
-*.bak
-*.tmp
-*.backup
-
-# Web
+# Docker
 .streamlit/

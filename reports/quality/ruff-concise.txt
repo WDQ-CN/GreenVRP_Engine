@@ -1,1 +1,0 @@
-﻿[*] 641 fixable with the `--fix` option (228 hidden fixes can be enabled with the `--unsafe-fixes` option).

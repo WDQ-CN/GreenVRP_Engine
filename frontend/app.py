@@ -6,7 +6,9 @@ GreenVRP Engine - Enterprise Simplified UI
 import os
 import sys
 import time
+from datetime import datetime
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -16,7 +18,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.vehicles import DEFAULT_VEHICLE_CONFIG
 from core.cost import calculate_green_cost
 from core.solver import GreenVRPSolver, solve_with_multiple_strategies
-from utils.security import escape_html, safe_read_csv
 
 # ========== 企业简约风格配色系统 ==========
 ENTERPRISE_COLORS = {
@@ -49,35 +50,35 @@ def load_enterprise_styles():
     <style>
         /* 全局样式重置 */
         .main {{
-            background-color: {ENTERPRISE_COLORS["light"]};
+            background-color: {ENTERPRISE_COLORS['light']};
         }}
 
         /* 主标题样式 */
         .enterprise-header {{
             text-align: center;
             padding: 2rem 0;
-            border-bottom: 2px solid {ENTERPRISE_COLORS["primary"]};
+            border-bottom: 2px solid {ENTERPRISE_COLORS['primary']};
             margin-bottom: 2rem;
         }}
 
         .enterprise-title {{
             font-size: 2rem;
             font-weight: 600;
-            color: {ENTERPRISE_COLORS["primary"]};
+            color: {ENTERPRISE_COLORS['primary']};
             margin: 0;
             letter-spacing: 0.5px;
         }}
 
         .enterprise-subtitle {{
             font-size: 1rem;
-            color: {ENTERPRISE_COLORS["gray"]};
+            color: {ENTERPRISE_COLORS['gray']};
             margin-top: 0.5rem;
             font-weight: 400;
         }}
 
         /* 卡片样式 */
         .enterprise-card {{
-            background-color: {ENTERPRISE_COLORS["white"]};
+            background-color: {ENTERPRISE_COLORS['white']};
             border-radius: 8px;
             padding: 1.5rem;
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
@@ -87,7 +88,7 @@ def load_enterprise_styles():
 
         /* 指标卡片样式 */
         .metric-card {{
-            background-color: {ENTERPRISE_COLORS["white"]};
+            background-color: {ENTERPRISE_COLORS['white']};
             border-radius: 6px;
             padding: 1.25rem;
             box-shadow: 0 1px 3px rgba(0,0,0,0.08);
@@ -102,7 +103,7 @@ def load_enterprise_styles():
 
         .metric-title {{
             font-size: 0.875rem;
-            color: {ENTERPRISE_COLORS["gray"]};
+            color: {ENTERPRISE_COLORS['gray']};
             margin-bottom: 0.5rem;
             font-weight: 500;
             text-transform: uppercase;
@@ -112,7 +113,7 @@ def load_enterprise_styles():
         .metric-value {{
             font-size: 1.75rem;
             font-weight: 600;
-            color: {ENTERPRISE_COLORS["primary"]};
+            color: {ENTERPRISE_COLORS['primary']};
             line-height: 1.2;
         }}
 
@@ -122,17 +123,17 @@ def load_enterprise_styles():
         }}
 
         .metric-delta.positive {{
-            color: {ENTERPRISE_COLORS["success"]};
+            color: {ENTERPRISE_COLORS['success']};
         }}
 
         .metric-delta.negative {{
-            color: {ENTERPRISE_COLORS["danger"]};
+            color: {ENTERPRISE_COLORS['danger']};
         }}
 
         /* 按钮样式 */
         .stButton>button {{
-            background-color: {ENTERPRISE_COLORS["primary"]};
-            color: {ENTERPRISE_COLORS["white"]};
+            background-color: {ENTERPRISE_COLORS['primary']};
+            color: {ENTERPRISE_COLORS['white']};
             border: none;
             border-radius: 4px;
             padding: 0.625rem 1.25rem;
@@ -141,14 +142,14 @@ def load_enterprise_styles():
         }}
 
         .stButton>button:hover {{
-            background-color: {ENTERPRISE_COLORS["secondary"]};
+            background-color: {ENTERPRISE_COLORS['secondary']};
             transform: translateY(-1px);
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }}
 
         /* 侧边栏样式 */
         [data-testid="stSidebar"] {{
-            background-color: {ENTERPRISE_COLORS["white"]};
+            background-color: {ENTERPRISE_COLORS['white']};
             border-right: 1px solid #E8E8E8;
         }}
 
@@ -158,8 +159,8 @@ def load_enterprise_styles():
         }}
 
         .stTabs [data-baseweb="tab"] {{
-            background-color: {ENTERPRISE_COLORS["white"]};
-            color: {ENTERPRISE_COLORS["gray"]};
+            background-color: {ENTERPRISE_COLORS['white']};
+            color: {ENTERPRISE_COLORS['gray']};
             border: none;
             border-bottom: 2px solid transparent;
             padding: 0.75rem 1.5rem;
@@ -167,8 +168,8 @@ def load_enterprise_styles():
         }}
 
         .stTabs [aria-selected="true"] {{
-            color: {ENTERPRISE_COLORS["primary"]};
-            border-bottom: 2px solid {ENTERPRISE_COLORS["accent"]};
+            color: {ENTERPRISE_COLORS['primary']};
+            border-bottom: 2px solid {ENTERPRISE_COLORS['accent']};
         }}
 
         /* 数据表格样式 */
@@ -180,7 +181,7 @@ def load_enterprise_styles():
 
         /* 进度条样式 */
         .stProgress > div > div > div {{
-            background-color: {ENTERPRISE_COLORS["accent"]};
+            background-color: {ENTERPRISE_COLORS['accent']};
         }}
 
         /* 分隔线样式 */
@@ -201,34 +202,34 @@ def load_enterprise_styles():
 
         .status-badge.success {{
             background-color: rgba(39, 174, 96, 0.1);
-            color: {ENTERPRISE_COLORS["success"]};
+            color: {ENTERPRISE_COLORS['success']};
         }}
 
         .status-badge.warning {{
             background-color: rgba(243, 156, 18, 0.1);
-            color: {ENTERPRISE_COLORS["warning"]};
+            color: {ENTERPRISE_COLORS['warning']};
         }}
 
         .status-badge.error {{
             background-color: rgba(231, 76, 60, 0.1);
-            color: {ENTERPRISE_COLORS["danger"]};
+            color: {ENTERPRISE_COLORS['danger']};
         }}
 
         /* 章节标题样式 */
         .section-header {{
-            color: {ENTERPRISE_COLORS["primary"]};
+            color: {ENTERPRISE_COLORS['primary']};
             font-size: 1.25rem;
             font-weight: 600;
             margin-bottom: 1rem;
             padding-bottom: 0.5rem;
-            border-bottom: 2px solid {ENTERPRISE_COLORS["accent"]};
+            border-bottom: 2px solid {ENTERPRISE_COLORS['accent']};
         }}
 
         /* 页脚样式 */
         .enterprise-footer {{
             text-align: center;
             padding: 2rem 0;
-            color: {ENTERPRISE_COLORS["gray"]};
+            color: {ENTERPRISE_COLORS['gray']};
             font-size: 0.875rem;
             border-top: 1px solid #E8E8E8;
             margin-top: 2rem;
@@ -242,7 +243,7 @@ def load_enterprise_styles():
 
         /* 展开器样式 */
         .streamlit-expanderHeader {{
-            background-color: {ENTERPRISE_COLORS["white"]};
+            background-color: {ENTERPRISE_COLORS['white']};
             border: 1px solid #E8E8E8;
             border-radius: 4px;
         }}
@@ -310,18 +311,12 @@ def enterprise_metric_card(title: str, value: str, delta: str = "", delta_type: 
 
 def enterprise_section_header(title: str):
     """企业风格的章节标题"""
-    st.markdown(
-        f'<div class="section-header">{escape_html(title)}</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(f'<div class="section-header">{title}</div>', unsafe_allow_html=True)
 
 
 def enterprise_status_badge(text: str, status: str = "success"):
     """企业风格的状态标签"""
-    st.markdown(
-        f'<span class="status-badge {status}">{escape_html(text)}</span>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(f'<span class="status-badge {status}">{text}</span>', unsafe_allow_html=True)
 
 
 # ========== 数据加载函数 ==========
@@ -461,26 +456,34 @@ def render_enterprise_sidebar():
             st.session_state.customers_df = load_default_data()
             st.success(f"已加载 {len(st.session_state.customers_df)} 个节点")
 
-        # 文件上传（使用安全读取函数）
+        # 文件上传
         uploaded_file = st.file_uploader(
             "上传客户数据 (CSV)",
             type=["csv"],
             help="请包含以下列: id, name, lat, lon, demand, service_time_min, tw_earliest, tw_latest",
         )
-        required_cols = [
-            "id",
-            "name",
-            "lat",
-            "lon",
-            "demand",
-            "service_time_min",
-            "tw_earliest",
-            "tw_latest",
-        ]
-        df = safe_read_csv(uploaded_file, required_cols)
-        if df is not None:
-            st.session_state.customers_df = df
-            st.success(f"已加载 {len(df)} 个节点")
+
+        if uploaded_file:
+            try:
+                df = pd.read_csv(uploaded_file)
+                required_cols = [
+                    "id",
+                    "name",
+                    "lat",
+                    "lon",
+                    "demand",
+                    "service_time_min",
+                    "tw_earliest",
+                    "tw_latest",
+                ]
+                if all(col in df.columns for col in required_cols):
+                    st.session_state.customers_df = df
+                    st.success(f"已加载 {len(df)} 个节点")
+                else:
+                    missing = [col for col in required_cols if col not in df.columns]
+                    st.error(f"缺少列: {missing}")
+            except Exception as e:
+                st.error(f"文件解析错误: {e}")
 
     return {
         "fuel_price": fuel_price,
@@ -599,6 +602,7 @@ def render_results():
         return
 
     solution = st.session_state.solution
+    cost_result = st.session_state.cost_result
 
     # 检查求解状态
     if solution.get("solution_status") != "SUCCESS":
@@ -612,11 +616,11 @@ def render_results():
         enterprise_metric_card("求解状态", "成功", "Status: SUCCESS")
 
     with col2:
-        enterprise_metric_card("求解耗时", f"{st.session_state.solve_time:.2f}s", "Performance")
+        enterprise_metric_card("求解耗时", f"{st.session_state.solve_time:.2f}s", f"Performance")
 
     with col3:
         vehicles_used = sum(solution.get("vehicles_used", {}).values())
-        enterprise_metric_card("使用车辆", f"{vehicles_used} 辆", "Fleet Utilization")
+        enterprise_metric_card("使用车辆", f"{vehicles_used} 辆", f"Fleet Utilization")
 
     with col4:
         late_minutes = solution.get("total_late_minutes", 0)
@@ -670,7 +674,7 @@ def main():
 
     # 页脚
     st.markdown(
-        """
+        f"""
     <div class="enterprise-footer">
         <p>GreenVRP Engine Enterprise Edition</p>
         <p>© 2024 绿色物流路径优化引擎 | 基于异构车队与软时间窗的城市配送碳排与成本优化系统</p>

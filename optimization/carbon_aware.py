@@ -3,22 +3,18 @@
 
 以碳排放为主要优化目标，支持碳预算约束，
 计算碳效率指标，提供减排建议。
-
-变更说明：
-- 通过 ISolverService 接口依赖求解器，不再直接 import core.cost
-- 移除 _detect_solver_signature 反射检测（脆弱设计），统一使用 ISolverService
 """
 
-import logging
-from dataclasses import dataclass
-from typing import Any
+import inspect
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 
-from config.constants import DIESEL_CO2_FACTOR
-from core.interfaces import ISolverService
-
-logger = logging.getLogger(__name__)
+from config.constants import DIESEL_CO2_FACTOR, VEHICLE_CARBON_BASELINE
+from core.cost import calculate_green_cost
 
 
 @dataclass
@@ -37,19 +33,19 @@ class CarbonEfficiencyReport:
     carbon_per_kg_goods: float
     """单位货物碳排放"""
 
-    vehicle_efficiency: dict[str, float]
+    vehicle_efficiency: Dict[str, float]
     """各车型碳效率"""
 
     reduction_potential: float
     """减排潜力"""
 
-    recommendations: list[str]
+    recommendations: List[str]
     """减排建议"""
 
-    comparison_with_baseline: dict[str, float] | None = None
+    comparison_with_baseline: Optional[Dict[str, float]] = None
     """与基准对比"""
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
         return {
             "total_carbon_kg": round(self.total_carbon_kg, 2),
@@ -64,92 +60,110 @@ class CarbonEfficiencyReport:
 
 
 class CarbonAwareOptimizer:
-    """碳感知路由优化器。
-
-    通过 ISolverService 接口调用求解器，不直接依赖 core/ 模块。
-    """
+    """碳感知路由优化器。"""
 
     def __init__(
         self,
-        solver_service: ISolverService,
-        customers: list[dict[str, Any]],
-        vehicle_config: dict[str, dict[str, Any]],
-        params: dict[str, float],
+        solver_func,
+        customers: List[Dict[str, Any]],
+        vehicle_config: Dict[str, Dict[str, Any]],
+        params: Dict[str, float],
     ):
         """
         初始化碳感知优化器。
 
         Args:
-            solver_service: 求解器服务实例（ISolverService 接口）
+            solver_func: 求解函数，支持两种签名：
+                - 新签名: (customers_df, vehicle_config, time_penalty_per_min, time_limit)
+                - 旧签名: (customers, vehicle_config, params)
             customers: 客户数据
             vehicle_config: 车型配置
             params: 全局参数
         """
-        self.solver_service = solver_service
+        self.solver_func = solver_func
         self.customers = customers
         self.vehicle_config = vehicle_config
         self.params = params
-        logger.info(
-            "CarbonAwareOptimizer 初始化: customers=%d, vehicle_types=%d",
-            len(customers),
-            len(vehicle_config),
-        )
+        # 检测求解器函数签名
+        self._solver_signature = self._detect_solver_signature()
+
+    def _detect_solver_signature(self) -> str:
+        """检测求解器函数签名类型。"""
+        try:
+            sig = inspect.signature(self.solver_func)
+            params = list(sig.parameters.keys())
+            # 新签名: customers_df, vehicle_config, time_penalty_per_min, time_limit
+            if len(params) >= 2 and ("time_penalty" in str(params) or "time_limit" in str(params)):
+                return "new"
+            # 旧签名: customers, vehicle_config, params
+            return "old"
+        except Exception:
+            return "old"
 
     def _call_solver(
         self,
-        params: dict[str, float] | None = None,
+        params: Optional[Dict[str, float]] = None,
         time_limit: int = 60,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         调用求解器并计算成本数据。
 
-        通过 ISolverService 接口调用，无需关心求解器内部签名。
-
         Args:
-            params: 参数字典
+            params: 参数字典（用于旧签名求解器）
             time_limit: 时间限制
 
         Returns:
             包含 cost_data 的求解结果
         """
         use_params = params or self.params
-        solve_params = {**use_params, "search_time_limit": time_limit}
 
-        logger.debug(
-            "调用求解器: time_limit=%ds, carbon_price=%.4f",
-            time_limit,
-            solve_params.get("carbon_price", 0),
-        )
+        if self._solver_signature == "new":
+            # 新签名: (customers_df, vehicle_config, time_penalty_per_min, time_limit)
+            time_penalty = use_params.get("late_penalty_per_min", 10.0)
+            # 将 customers 转换为 DataFrame
+            if isinstance(self.customers, list):
+                customers_df = pd.DataFrame(self.customers)
+            else:
+                customers_df = self.customers
 
-        result = self.solver_service.solve_sync(
-            self.customers,
-            self.vehicle_config,
-            solve_params,
-        )
+            result = self.solver_func(
+                customers_df,
+                self.vehicle_config,
+                time_penalty,
+                time_limit,
+            )
+        else:
+            # 旧签名: (customers, vehicle_config, params)
+            result = self.solver_func(
+                self.customers,
+                self.vehicle_config,
+                use_params,
+            )
 
-        # solve_sync 返回 {"solution": ..., "cost_result": ..., "solve_time_seconds": ...}
-        solution = result["solution"]
-        cost_result = result["cost_result"]
+        # 确保结果包含 cost_data
+        if "cost_data" not in result and "routes" in result:
+            # 构建 params 字典
+            cost_params = {
+                "carbon_price": use_params.get("carbon_price", 0.08),
+                "fuel_price": use_params.get("fuel_price", 7.5),
+                "hourly_wage": use_params.get("labor_cost_per_hour", 30),
+                "late_penalty_per_min": use_params.get("late_penalty_per_min", 10.0),
+            }
+            cost_result = calculate_green_cost(
+                result,
+                self.vehicle_config,
+                cost_params,
+            )
+            result["cost_data"] = cost_result
 
-        carbon = cost_result.get("carbon_emission_kg", 0) if cost_result else 0
-        logger.debug(
-            "求解器返回: solve_time=%.2fs, carbon=%.2fkg",
-            result.get("solve_time_seconds", 0),
-            carbon,
-        )
-
-        # 确保结果包含 cost_data（兼容旧版调用方）
-        if "cost_data" not in solution and cost_result is not None:
-            solution["cost_data"] = cost_result
-
-        return solution
+        return result
 
     def optimize_for_carbon(
         self,
-        carbon_target: float | None = None,
+        carbon_target: Optional[float] = None,
         method: str = "weighted",
         time_limit: int = 60,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         以碳排放为主要目标优化。
 
@@ -165,22 +179,19 @@ class CarbonAwareOptimizer:
             优化结果
         """
         if method == "weighted":
-            logger.info("碳优化方法: weighted (加权法), carbon_target=%s", carbon_target)
             return self._optimize_weighted(carbon_target, time_limit)
         elif method == "constraint":
-            logger.info("碳优化方法: constraint (约束法), carbon_target=%s", carbon_target)
             return self._optimize_constraint(carbon_target, time_limit)
         elif method == "hierarchical":
-            logger.info("碳优化方法: hierarchical (层次法), carbon_target=%s", carbon_target)
             return self._optimize_hierarchical(carbon_target, time_limit)
         else:
             raise ValueError(f"未知优化方法: {method}")
 
     def _optimize_weighted(
         self,
-        carbon_target: float | None,
+        carbon_target: Optional[float],
         time_limit: int,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         加权法：将碳排放作为优化目标之一。
         """
@@ -213,9 +224,9 @@ class CarbonAwareOptimizer:
 
     def _optimize_constraint(
         self,
-        carbon_target: float | None,
+        carbon_target: Optional[float],
         time_limit: int,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         约束法：将碳排放作为硬约束。
         """
@@ -237,11 +248,10 @@ class CarbonAwareOptimizer:
 
             actual_carbon = result.get("cost_data", {}).get("carbon_emission_kg", 0)
 
-            if actual_carbon <= carbon_target and (
-                best_result is None or actual_carbon < best_carbon
-            ):
-                best_result = result
-                best_carbon = actual_carbon
+            if actual_carbon <= carbon_target:
+                if best_result is None or actual_carbon < best_carbon:
+                    best_result = result
+                    best_carbon = actual_carbon
 
             if actual_carbon < carbon_target * 0.8:
                 # 已经明显低于目标，无需更高碳价
@@ -262,9 +272,9 @@ class CarbonAwareOptimizer:
 
     def _optimize_hierarchical(
         self,
-        carbon_target: float | None,
+        carbon_target: Optional[float],
         time_limit: int,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         层次法：先优化碳排放，再在满足碳排放约束下优化成本。
         """
@@ -279,7 +289,7 @@ class CarbonAwareOptimizer:
             return carbon_optimized
 
         # 第二阶段：在碳约束下优化成本
-        min(carbon_target or min_carbon * 1.1, min_carbon * 1.1)
+        effective_target = min(carbon_target or min_carbon * 1.1, min_carbon * 1.1)
 
         adjusted_params = self.params.copy()
         adjusted_params["carbon_price"] = self.params.get("carbon_price", 0.08) * 5
@@ -294,7 +304,7 @@ class CarbonAwareOptimizer:
 
     def calculate_carbon_efficiency(
         self,
-        solution: dict[str, Any],
+        solution: Dict[str, Any],
     ) -> CarbonEfficiencyReport:
         """
         计算碳效率指标。
@@ -367,7 +377,7 @@ class CarbonAwareOptimizer:
 
     def _calculate_reduction_potential(
         self,
-        solution: dict[str, Any],
+        solution: Dict[str, Any],
     ) -> float:
         """
         计算减排潜力。
@@ -413,10 +423,10 @@ class CarbonAwareOptimizer:
 
     def _generate_recommendations(
         self,
-        solution: dict[str, Any],
-        vehicle_efficiency: dict[str, float],
+        solution: Dict[str, Any],
+        vehicle_efficiency: Dict[str, float],
         reduction_potential: float,
-    ) -> list[str]:
+    ) -> List[str]:
         """
         生成减排建议。
         """
@@ -433,7 +443,7 @@ class CarbonAwareOptimizer:
         # 减排潜力提醒
         if reduction_potential > 10:
             recommendations.append(
-                f"存在约 {reduction_potential:.1f} kg 的减排潜力，可通过优化车型配置实现"
+                f"存在约 {reduction_potential:.1f} kg 的减排潜力，" "可通过优化车型配置实现"
             )
 
         # 路线优化建议
@@ -453,7 +463,7 @@ class CarbonAwareOptimizer:
         total_late = solution.get("total_late_minutes", 0)
         if total_late > 0:
             recommendations.append(
-                f"存在 {total_late} 分钟迟到，可能导致额外碳排放，建议放宽时间窗约束"
+                f"存在 {total_late} 分钟迟到，可能导致额外碳排放，" "建议放宽时间窗约束"
             )
 
         if not recommendations:
@@ -463,8 +473,8 @@ class CarbonAwareOptimizer:
 
     def compare_carbon_scenarios(
         self,
-        scenarios: list[dict[str, Any]],
-    ) -> dict[str, Any]:
+        scenarios: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
         """
         对比多个场景的碳排放。
 
@@ -503,8 +513,8 @@ class CarbonAwareOptimizer:
 
     def generate_carbon_report(
         self,
-        solution: dict[str, Any],
-        report: CarbonEfficiencyReport | None = None,
+        solution: Dict[str, Any],
+        report: Optional[CarbonEfficiencyReport] = None,
     ) -> str:
         """
         生成碳排放文本报告。

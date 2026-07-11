@@ -20,6 +20,7 @@ import folium
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from folium import plugins
 from streamlit_folium import st_folium
 
 # 添加项目根目录到路径
@@ -28,7 +29,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config.vehicles import DEFAULT_VEHICLE_CONFIG
 from core.cost import calculate_green_cost
 from core.solver import GreenVRPSolver, solve_with_multiple_strategies
-from utils.security import safe_read_csv
 
 # 页面配置
 st.set_page_config(
@@ -141,7 +141,7 @@ def create_map(customers_df, solution=None):
                 ).add_to(m)
 
             # 绘制站点
-            for _i, stop in enumerate(stops):
+            for i, stop in enumerate(stops):
                 node = stop.get("node", 0)
                 lat = stop["lat"]
                 lon = stop["lon"]
@@ -150,7 +150,7 @@ def create_map(customers_df, solution=None):
                 if node == 0:
                     folium.Marker(
                         [lat, lon],
-                        popup="仓库",
+                        popup=f"仓库",
                         icon=folium.Icon(color="red", icon="home", prefix="fa"),
                     ).add_to(m)
                 else:
@@ -159,10 +159,10 @@ def create_map(customers_df, solution=None):
                     marker_color = "orange" if is_late else "blue"
 
                     popup_html = f"""
-                    <b>{stop.get("customer_name", f"客户{node}")}</b><br>
-                    需求: {stop.get("demand", 0)} 件<br>
-                    到达: {stop.get("arrival_time", 0)} 分钟<br>
-                    时间窗: {stop.get("tw_earliest", 0)} - {stop.get("tw_latest", 0)}
+                    <b>{stop.get('customer_name', f'客户{node}')}</b><br>
+                    需求: {stop.get('demand', 0)} 件<br>
+                    到达: {stop.get('arrival_time', 0)} 分钟<br>
+                    时间窗: {stop.get('tw_earliest', 0)} - {stop.get('tw_latest', 0)}
                     """
                     if is_late:
                         popup_html += f"<br><span style='color:red'>迟到: {stop.get('late_minutes', 0)} 分钟</span>"
@@ -190,19 +190,21 @@ def create_map(customers_df, solution=None):
         """
         m.get_root().html.add_child(folium.Element(legend_html))
     else:
-        # 只显示客户位置
-        for _, row in customers_df.iterrows():
-            if row["id"] == 0:
+        # 只显示客户位置 (使用 NumPy 向量化优化)
+        customer_data = customers_df[["id", "lat", "lon", "name"]].values
+        for row in customer_data:
+            cust_id, lat, lon, name = int(row[0]), row[1], row[2], row[3]
+            if cust_id == 0:
                 folium.Marker(
-                    [row["lat"], row["lon"]],
-                    popup=row["name"],
+                    [lat, lon],
+                    popup=name,
                     icon=folium.Icon(color="red", icon="home", prefix="fa"),
                 ).add_to(m)
             else:
                 folium.CircleMarker(
-                    [row["lat"], row["lon"]],
+                    [lat, lon],
                     radius=8,
-                    popup=row["name"],
+                    popup=name,
                     color="blue",
                     fill=True,
                     fillColor="blue",
@@ -232,7 +234,7 @@ def display_cost_analysis(cost_result, solution):
                 )
             ]
         )
-        fig.update_layout(height=400, margin={"t": 20, "b": 20, "l": 20, "r": 20})
+        fig.update_layout(height=400, margin=dict(t=20, b=20, l=20, r=20))
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
@@ -324,7 +326,7 @@ def display_vehicle_usage(solution, vehicle_config):
     with col1:
         # 车辆使用柱状图
         fig = go.Figure()
-        for v_type in vehicle_config:
+        for v_type in vehicle_config.keys():
             used = vehicles_used.get(v_type, 0)
             available = vehicle_config[v_type].get("count", 0)
             fig.add_trace(
@@ -440,7 +442,7 @@ def solve_with_strategy(
         return {
             "routes": [],
             "total_distance": 0,
-            "vehicles_used": dict.fromkeys(vehicle_config, 0),
+            "vehicles_used": {v_type: 0 for v_type in vehicle_config},
             "total_late_minutes": 0,
             "solution_status": f"ERROR: {str(e)}",
             "solve_time_seconds": 0,
@@ -471,6 +473,7 @@ def display_comparison_tab():
         comparison_time_limit = st.slider(
             "每个策略求解时间（秒）", 10, 120, 30, key="comparison_time_limit"
         )
+        use_parallel = st.checkbox("并行求解", value=True)
 
     # 求解按钮
     if st.button("🔄 开始多方案对比", type="primary", use_container_width=True):
@@ -490,7 +493,7 @@ def display_comparison_tab():
             for i, strategy_name in enumerate(selected_strategies):
                 strategy_info = strategies[strategy_name]
 
-                status_text.text(f"正在求解: {strategy_name} ({i + 1}/{total})...")
+                status_text.text(f"正在求解: {strategy_name} ({i+1}/{total})...")
                 progress_bar.progress((i) / total)
 
                 start_time = time.time()
@@ -834,22 +837,29 @@ def main():
             st.session_state.customers_df = load_default_data()
             st.success(f"已加载 {len(st.session_state.customers_df)} 个节点")
 
-        # 文件上传（使用安全读取函数）
+        # 文件上传
         uploaded_file = st.file_uploader("上传客户数据 (CSV)", type=["csv"])
-        required_cols = [
-            "id",
-            "name",
-            "lat",
-            "lon",
-            "demand",
-            "service_time_min",
-            "tw_earliest",
-            "tw_latest",
-        ]
-        df = safe_read_csv(uploaded_file, required_cols)
-        if df is not None:
-            st.session_state.customers_df = df
-            st.success(f"已加载 {len(df)} 个节点")
+        if uploaded_file:
+            try:
+                df = pd.read_csv(uploaded_file)
+                required_cols = [
+                    "id",
+                    "name",
+                    "lat",
+                    "lon",
+                    "demand",
+                    "service_time_min",
+                    "tw_earliest",
+                    "tw_latest",
+                ]
+                if all(col in df.columns for col in required_cols):
+                    st.session_state.customers_df = df
+                    st.success(f"已加载 {len(df)} 个节点")
+                else:
+                    missing = [col for col in required_cols if col not in df.columns]
+                    st.error(f"缺少列: {missing}")
+            except Exception as e:
+                st.error(f"文件解析错误: {e}")
 
     # 主内容区
     tab1, tab2, tab3 = st.tabs(["🗺️ 地图可视化", "📊 成本分析", "📈 对比分析"])

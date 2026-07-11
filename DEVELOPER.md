@@ -23,7 +23,8 @@ python -m venv .venv
 # source .venv/bin/activate  # Linux/macOS
 
 # 安装依赖
-pip install -e ".[dev]"
+pip install -r requirements.txt
+pip install -r requirements-test.txt
 
 # 预提交钩子（可选）
 pip install pre-commit
@@ -55,13 +56,12 @@ pre-commit install
 
 ```bash
 # 格式化代码
-python -m ruff format .
+pip install black
+black .
 
 # 检查代码风格
-python -m ruff check .
-
-# 类型检查
-python -m mypy api/ core/ optimization/ utils/ exceptions/ models/
+pip install flake8
+flake8 .
 ```
 
 ### 2. 命名规范
@@ -159,39 +159,16 @@ def test_calculate_distance():
 
 ```bash
 # 运行所有测试
-python -m pytest tests/
+pytest tests/
 
 # 运行特定模块测试
-python -m pytest tests/unit/core/test_distance.py -v
+pytest tests/unit/core/test_distance.py -v
 
 # 生成覆盖率报告
-python -m pytest --cov=. --cov-report=html
+pytest --cov=. --cov-report=html
 
 # 查看覆盖率
 # 打开 htmlcov/index.html
-```
-
-### 前端开发
-
-前端位于 `web/` 目录，使用 Vite + React + TypeScript + Tailwind CSS：
-
-```bash
-cd web
-
-# 安装依赖
-npm install
-
-# 启动开发服务器
-npm run dev
-
-# 代码检查
-npm run lint
-
-# 运行测试
-npm run test
-
-# 生产构建
-npm run build
 ```
 
 ### 测试覆盖率要求

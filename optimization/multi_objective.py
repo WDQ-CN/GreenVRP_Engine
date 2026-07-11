@@ -5,14 +5,13 @@
 生成 Pareto 前沿供决策者权衡选择。
 """
 
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-
-from core.interfaces import ISolverService
 
 
 @dataclass
@@ -31,7 +30,7 @@ class ObjectiveWeights:
     service_level: float = 0.1
     """服务水平权重"""
 
-    def to_list(self) -> list[float]:
+    def to_list(self) -> List[float]:
         """转换为列表。"""
         return [self.cost, self.carbon, self.time, self.service_level]
 
@@ -48,7 +47,7 @@ class ObjectiveWeights:
         )
 
     @classmethod
-    def from_dict(cls, d: dict[str, float]) -> "ObjectiveWeights":
+    def from_dict(cls, d: Dict[str, float]) -> "ObjectiveWeights":
         """从字典创建。"""
         return cls(
             cost=d.get("cost", 0.4),
@@ -62,25 +61,25 @@ class ObjectiveWeights:
 class ParetoFrontResult:
     """Pareto 前沿结果。"""
 
-    solutions: list[dict[str, Any]]
+    solutions: List[Dict[str, Any]]
     """前沿解集合"""
 
-    objective_values: list[dict[str, float]]
+    objective_values: List[Dict[str, float]]
     """各解的目标值"""
 
-    weights_used: list[ObjectiveWeights]
+    weights_used: List[ObjectiveWeights]
     """使用的权重配置"""
 
-    best_compromise: dict[str, Any]
+    best_compromise: Dict[str, Any]
     """最佳折中解"""
 
-    knee_point: int | None
+    knee_point: Optional[int]
     """膝点索引（Pareto前沿上权衡最优的点）"""
 
     summary: pd.DataFrame
     """汇总表"""
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
         return {
             "solutions": self.solutions,
@@ -122,31 +121,31 @@ class MultiObjectiveOptimizer:
 
     def __init__(
         self,
-        solver_service: ISolverService,
-        customers: list[dict[str, Any]],
-        vehicle_config: dict[str, dict[str, Any]],
-        params: dict[str, float],
+        solver_func: Callable,
+        customers: List[Dict[str, Any]],
+        vehicle_config: Dict[str, Dict[str, Any]],
+        params: Dict[str, float],
     ):
         """
         初始化多目标优化器。
 
         Args:
-            solver_service: 求解器服务实例（ISolverService 接口）
+            solver_func: 求解函数
             customers: 客户数据
             vehicle_config: 车型配置
             params: 全局参数
         """
-        self.solver_service = solver_service
+        self.solver_func = solver_func
         self.customers = customers
         self.vehicle_config = vehicle_config
         self.params = params
 
     def optimize(
         self,
-        weights: ObjectiveWeights | None = None,
+        weights: Optional[ObjectiveWeights] = None,
         method: str = "weighted_sum",
         time_limit: int = 60,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         执行多目标优化。
 
@@ -176,7 +175,7 @@ class MultiObjectiveOptimizer:
         self,
         weights: ObjectiveWeights,
         time_limit: int,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         加权求和法优化。
 
@@ -199,10 +198,10 @@ class MultiObjectiveOptimizer:
         adjusted_params["hourly_wage"] = base_wage * (1 + weights.time)
 
         # 求解
-        result = self.solver_service.solve_sync(
+        result = self.solver_func(
             self.customers,
-            vehicle_config=self.vehicle_config,
-            params=adjusted_params,
+            self.vehicle_config,
+            adjusted_params,
         )
 
         result["optimization_method"] = "weighted_sum"
@@ -214,7 +213,7 @@ class MultiObjectiveOptimizer:
         self,
         weights: ObjectiveWeights,
         time_limit: int,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         ε-约束法优化。
 
@@ -232,10 +231,10 @@ class MultiObjectiveOptimizer:
             1 + carbon_factor
         )
 
-        result = self.solver_service.solve_sync(
+        result = self.solver_func(
             self.customers,
-            vehicle_config=self.vehicle_config,
-            params=adjusted_params,
+            self.vehicle_config,
+            adjusted_params,
         )
 
         result["optimization_method"] = "epsilon_constraint"
@@ -285,8 +284,8 @@ class MultiObjectiveOptimizer:
                         if result.get("solution_status") == "SUCCESS":
                             solutions.append(result)
                             objective_values.append(self._extract_objectives(result))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"求解失败: {e}")
         else:
             for weights in weight_combinations:
                 try:
@@ -294,8 +293,8 @@ class MultiObjectiveOptimizer:
                     if result.get("solution_status") == "SUCCESS":
                         solutions.append(result)
                         objective_values.append(self._extract_objectives(result))
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"求解失败: {e}")
 
         if not solutions:
             return self._create_empty_pareto_result()
@@ -329,7 +328,7 @@ class MultiObjectiveOptimizer:
     def _generate_weight_grid(
         self,
         num_points: int,
-    ) -> list[ObjectiveWeights]:
+    ) -> List[ObjectiveWeights]:
         """
         生成权重网格。
 
@@ -356,7 +355,7 @@ class MultiObjectiveOptimizer:
         self,
         weights: ObjectiveWeights,
         time_limit: int,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         使用指定权重求解。
         """
@@ -364,8 +363,8 @@ class MultiObjectiveOptimizer:
 
     def _extract_objectives(
         self,
-        solution: dict[str, Any],
-    ) -> dict[str, float]:
+        solution: Dict[str, Any],
+    ) -> Dict[str, float]:
         """
         提取目标值。
         """
@@ -374,8 +373,7 @@ class MultiObjectiveOptimizer:
         # 计算服务水平（按时送达比例）
         total_late = solution.get("total_late_minutes", 0)
         total_customers = sum(
-            len(route.get("stops", [])) - 2  # 减去起终点
-            for route in solution.get("routes", [])
+            len(route.get("stops", [])) - 2 for route in solution.get("routes", [])  # 减去起终点
         )
         service_level = max(0, 100 - (total_late / max(total_customers, 1) * 10))
 
@@ -388,8 +386,8 @@ class MultiObjectiveOptimizer:
 
     def _filter_pareto_front(
         self,
-        objective_values: list[dict[str, float]],
-    ) -> list[int]:
+        objective_values: List[Dict[str, float]],
+    ) -> List[int]:
         """
         过滤非支配解（v3优化版 - 使用分块和NumPy向量化）。
 
@@ -419,10 +417,10 @@ class MultiObjectiveOptimizer:
         is_dominated = np.zeros(n, dtype=bool)
 
         # 分块大小（根据CPU缓存大小调整）
-        block_size = 64
+        BLOCK_SIZE = 64
 
-        for block_start in range(0, n, block_size):
-            block_end = min(block_start + block_size, n)
+        for block_start in range(0, n, BLOCK_SIZE):
+            block_end = min(block_start + BLOCK_SIZE, n)
             block_indices = range(block_start, block_end)
 
             for i in block_indices:
@@ -453,8 +451,8 @@ class MultiObjectiveOptimizer:
 
     def _dominates(
         self,
-        sol1: dict[str, float],
-        sol2: dict[str, float],
+        sol1: Dict[str, float],
+        sol2: Dict[str, float],
     ) -> bool:
         """
         检查 sol1 是否支配 sol2。
@@ -482,7 +480,7 @@ class MultiObjectiveOptimizer:
 
     def _find_best_compromise(
         self,
-        objective_values: list[dict[str, float]],
+        objective_values: List[Dict[str, float]],
     ) -> int:
         """
         找到最佳折中解。
@@ -528,8 +526,8 @@ class MultiObjectiveOptimizer:
 
     def _find_knee_point(
         self,
-        objective_values: list[dict[str, float]],
-    ) -> int | None:
+        objective_values: List[Dict[str, float]],
+    ) -> Optional[int]:
         """
         找到膝点（Pareto 前沿上权衡最优的点）。
 
@@ -571,16 +569,16 @@ class MultiObjectiveOptimizer:
 
     def _build_summary_table(
         self,
-        solutions: list[dict[str, Any]],
-        objective_values: list[dict[str, float]],
-        weights: list[ObjectiveWeights],
+        solutions: List[Dict[str, Any]],
+        objective_values: List[Dict[str, float]],
+        weights: List[ObjectiveWeights],
     ) -> pd.DataFrame:
         """
         构建汇总表。
         """
         data = []
 
-        for i, (_sol, obj, w) in enumerate(zip(solutions, objective_values, weights, strict=False)):
+        for i, (sol, obj, w) in enumerate(zip(solutions, objective_values, weights)):
             data.append(
                 {
                     "解编号": i + 1,
@@ -609,7 +607,7 @@ class MultiObjectiveOptimizer:
     def calculate_tradeoffs(
         self,
         pareto_result: ParetoFrontResult,
-    ) -> list[dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         """
         计算权衡分析。
 

@@ -4,7 +4,7 @@
 统一管理车辆配置信息。
 """
 
-from typing import TypedDict
+from typing import Dict, Optional, TypedDict
 
 
 class VehicleConfigDict(TypedDict, total=False):
@@ -30,7 +30,7 @@ class VehicleConfigDict(TypedDict, total=False):
 
 
 # 默认车型配置
-DEFAULT_VEHICLE_CONFIG: dict[str, VehicleConfigDict] = {
+DEFAULT_VEHICLE_CONFIG: Dict[str, VehicleConfigDict] = {
     "4.2m": {
         "capacity": 800,
         "fixed_cost": 200,
@@ -58,7 +58,7 @@ DEFAULT_VEHICLE_CONFIG: dict[str, VehicleConfigDict] = {
 }
 
 
-def get_vehicle_config(vehicle_type: str) -> VehicleConfigDict | None:
+def get_vehicle_config(vehicle_type: str) -> Optional[VehicleConfigDict]:
     """
     获取指定车型的配置。
 

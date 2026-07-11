@@ -4,73 +4,20 @@
 提供场景 CRUD 操作。
 """
 
-import threading
-import time
-from typing import Any
+from datetime import datetime
+from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import asc, func
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-from models import Customer, Scenario, Solution, get_db
-
-from ..schemas import (
-    ScenarioCreate,
-    ScenarioDetailResponse,
-    ScenarioResponse,
-    ScenarioUpdate,
-)
+from ..schemas import ScenarioCreate, ScenarioResponse, ScenarioUpdate
+from ..security.auth import get_current_user
+from ..security.rate_limit import limiter
 
 router = APIRouter(prefix="/scenarios", tags=["场景管理"])
 
-# 场景列表内存缓存：列表查询频繁且数据变化不频繁，短时缓存可显著降低 P95。
-# 写操作（创建/更新/删除）会主动失效缓存，保证数据一致性。
-# 缓存中存储字典列表，读取时重建 Pydantic 模型，既防污染又避免深拷贝开销。
-_list_scenarios_cache: dict[tuple[int, int], tuple[float, list[dict[str, Any]]]] = {}
-_scenarios_cache_lock = threading.Lock()
-_SCENARIOS_CACHE_TTL_SECONDS = 30
-
-
-def _serialize_scenarios(items: list[ScenarioResponse]) -> list[dict[str, Any]]:
-    """将 ScenarioResponse 列表序列化为字典列表，避免缓存被外部修改。"""
-    return [item.model_dump() for item in items]
-
-
-def _deserialize_scenarios(payload: list[dict[str, Any]]) -> list[ScenarioResponse]:
-    """反序列化字典列表为 ScenarioResponse 列表，返回全新对象以隔离调用方。"""
-    return [ScenarioResponse(**d) for d in payload]
-
-
-def _get_cached_scenarios(limit: int, offset: int) -> list[ScenarioResponse] | None:
-    """读取场景列表缓存，过期自动清理。返回重建对象以避免调用方污染缓存。"""
-    key = (limit, offset)
-    now = time.time()
-    with _scenarios_cache_lock:
-        # 清理过期条目
-        expired = [
-            k
-            for k, (ts, _) in _list_scenarios_cache.items()
-            if now - ts > _SCENARIOS_CACHE_TTL_SECONDS
-        ]
-        for k in expired:
-            del _list_scenarios_cache[k]
-        entry = _list_scenarios_cache.get(key)
-        if entry is None:
-            return None
-        return _deserialize_scenarios(entry[1])
-
-
-def _set_cached_scenarios(limit: int, offset: int, value: list[ScenarioResponse]) -> None:
-    """写入场景列表缓存。"""
-    with _scenarios_cache_lock:
-        _list_scenarios_cache[(limit, offset)] = (time.time(), _serialize_scenarios(value))
-
-
-def _invalidate_scenarios_cache() -> None:
-    """场景变更时失效全部列表缓存。"""
-    with _scenarios_cache_lock:
-        _list_scenarios_cache.clear()
+# 内存存储（生产环境应使用数据库）
+_scenarios_db: dict = {}
+_scenario_counter = 0
 
 
 @router.post(
@@ -78,145 +25,112 @@ def _invalidate_scenarios_cache() -> None:
     response_model=ScenarioResponse,
     summary="创建场景",
 )
+@limiter.limit("20/minute")
 async def create_scenario(
-    request: ScenarioCreate,
-    db: Session = Depends(get_db),  # noqa: B008
+    request: Request,
+    body: ScenarioCreate,
+    current_user: dict = Depends(get_current_user),
 ) -> ScenarioResponse:
-    """创建新场景。"""
-    # 创建 Scenario 记录
-    scenario = Scenario(
-        name=request.name,
-        description=request.description,
-        vehicle_config_data=(
-            {k: v.model_dump() for k, v in request.vehicle_config.items()}
-            if request.vehicle_config
+    """
+    创建新场景。
+    
+    需要认证：是（API Key 或 JWT Token）
+    速率限制：20/minute
+    """
+    global _scenario_counter
+    _scenario_counter += 1
+
+    scenario_id = _scenario_counter
+    created_at = datetime.now()
+
+    _scenarios_db[scenario_id] = {
+        "id": scenario_id,
+        "name": body.name,
+        "description": body.description,
+        "customers": [c.model_dump() for c in body.customers],
+        "vehicle_config": (
+            {k: v.model_dump() for k, v in body.vehicle_config.items()}
+            if body.vehicle_config
             else None
         ),
-        params_data=request.params.model_dump() if request.params else None,
-    )
-    db.add(scenario)
-    db.flush()  # 获取 scenario.id 但不提交，用于创建关联的 Customer
-
-    # 创建关联的 Customer 记录
-    for customer_data in request.customers:
-        customer = Customer(
-            scenario_id=scenario.id,
-            customer_id=customer_data.id,
-            name=customer_data.name,
-            lat=customer_data.lat,
-            lon=customer_data.lon,
-            demand=customer_data.demand,
-            service_time_min=customer_data.service_time_min,
-            tw_earliest=customer_data.tw_earliest,
-            tw_latest=customer_data.tw_latest,
-        )
-        db.add(customer)
-
-    try:
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail=f"场景创建失败，数据冲突: {exc.orig}",
-        ) from exc
-    db.refresh(scenario)
-    _invalidate_scenarios_cache()
+        "created_at": created_at,
+        "updated_at": None,
+        "solutions": [],
+    }
 
     return ScenarioResponse(
-        id=scenario.id,
-        name=scenario.name,
-        description=scenario.description,
-        customer_count=len(scenario.customers),
-        solution_count=len(scenario.solutions),
-        created_at=scenario.created_at,
-        updated_at=scenario.updated_at,
+        id=scenario_id,
+        name=body.name,
+        description=body.description,
+        customer_count=len(body.customers),
+        solution_count=0,
+        created_at=created_at,
     )
 
 
 @router.get(
     "",
-    response_model=list[ScenarioResponse],
+    response_model=List[ScenarioResponse],
     summary="列出场景",
 )
+@limiter.limit("100/minute")
 async def list_scenarios(
+    request: Request,
     limit: int = 100,
     offset: int = 0,
-    db: Session = Depends(get_db),  # noqa: B008
-) -> list[ScenarioResponse]:
-    """列出所有场景（使用子查询聚合计数，避免加载完整关联对象）。"""
-    cached = _get_cached_scenarios(limit, offset)
-    if cached is not None:
-        return cached
+    current_user: dict = Depends(get_current_user),
+) -> List[ScenarioResponse]:
+    """
+    列出所有场景。
+    
+    需要认证：是（API Key 或 JWT Token）
+    速率限制：100/minute
+    """
+    scenarios = list(_scenarios_db.values())[offset : offset + limit]
 
-    # 子查询：统计每个场景的客户数与结果数，避免 joinedload 数据膨胀
-    customer_counts = (
-        db.query(Customer.scenario_id, func.count(Customer.id).label("cnt"))
-        .group_by(Customer.scenario_id)
-        .subquery()
-    )
-    solution_counts = (
-        db.query(Solution.scenario_id, func.count(Solution.id).label("cnt"))
-        .group_by(Solution.scenario_id)
-        .subquery()
-    )
-
-    rows = (
-        db.query(
-            Scenario,
-            func.coalesce(customer_counts.c.cnt, 0).label("customer_count"),
-            func.coalesce(solution_counts.c.cnt, 0).label("solution_count"),
-        )
-        .outerjoin(customer_counts, customer_counts.c.scenario_id == Scenario.id)
-        .outerjoin(solution_counts, solution_counts.c.scenario_id == Scenario.id)
-        .order_by(asc(Scenario.updated_at).nullslast(), asc(Scenario.id))
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
-
-    result = [
+    return [
         ScenarioResponse(
-            id=s.id,
-            name=s.name,
-            description=s.description,
-            customer_count=int(customer_count),
-            solution_count=int(solution_count),
-            created_at=s.created_at,
-            updated_at=s.updated_at,
+            id=s["id"],
+            name=s["name"],
+            description=s.get("description"),
+            customer_count=len(s.get("customers", [])),
+            solution_count=len(s.get("solutions", [])),
+            created_at=s["created_at"],
+            updated_at=s.get("updated_at"),
         )
-        for s, customer_count, solution_count in rows
+        for s in scenarios
     ]
-    _set_cached_scenarios(limit, offset, result)
-    return result
 
 
 @router.get(
     "/{scenario_id}",
-    response_model=ScenarioDetailResponse,
+    response_model=ScenarioResponse,
     summary="获取场景详情",
 )
+@limiter.limit("100/minute")
 async def get_scenario(
+    request: Request,
     scenario_id: int,
-    db: Session = Depends(get_db),  # noqa: B008
-) -> ScenarioDetailResponse:
-    """获取指定场景的详情，包含完整数据。"""
-    scenario = db.query(Scenario).filter(Scenario.id == scenario_id).first()
-    if not scenario:
-        raise HTTPException(status_code=404, detail=f"场景不存在: {scenario_id}")
+    current_user: dict = Depends(get_current_user),
+) -> ScenarioResponse:
+    """
+    获取指定场景的详情。
+    
+    需要认证：是（API Key 或 JWT Token）
+    速率限制：100/minute
+    """
+    if scenario_id not in _scenarios_db:
+        raise HTTPException(status_code=404, detail=f"场景不存在：{scenario_id}")
 
-    # 将 Customer 对象转换为字典列表
-    customers = [c.to_dict() for c in scenario.customers]
-
-    return ScenarioDetailResponse(
-        id=scenario.id,
-        name=scenario.name,
-        description=scenario.description,
-        customers=customers,
-        vehicle_config=scenario.vehicle_config_data,
-        params=scenario.params_data,
-        created_at=scenario.created_at,
-        updated_at=scenario.updated_at,
+    s = _scenarios_db[scenario_id]
+    return ScenarioResponse(
+        id=s["id"],
+        name=s["name"],
+        description=s.get("description"),
+        customer_count=len(s.get("customers", [])),
+        solution_count=len(s.get("solutions", [])),
+        created_at=s["created_at"],
+        updated_at=s.get("updated_at"),
     )
 
 
@@ -225,90 +139,43 @@ async def get_scenario(
     response_model=ScenarioResponse,
     summary="更新场景",
 )
+@limiter.limit("20/minute")
 async def update_scenario(
+    request: Request,
     scenario_id: int,
-    request: ScenarioUpdate,
-    db: Session = Depends(get_db),  # noqa: B008
+    body: ScenarioUpdate,
+    current_user: dict = Depends(get_current_user),
 ) -> ScenarioResponse:
-    """更新场景信息。"""
-    scenario = db.query(Scenario).filter(Scenario.id == scenario_id).first()
-    if not scenario:
-        raise HTTPException(status_code=404, detail=f"场景不存在: {scenario_id}")
+    """
+    更新场景信息。
+    
+    需要认证：是（API Key 或 JWT Token）
+    速率限制：20/minute
+    """
+    if scenario_id not in _scenarios_db:
+        raise HTTPException(status_code=404, detail=f"场景不存在：{scenario_id}")
 
-    # 更新基本字段
-    if request.name is not None:
-        scenario.name = request.name
-    if request.description is not None:
-        scenario.description = request.description
+    scenario = _scenarios_db[scenario_id]
 
-    # 更新车型配置
-    if request.vehicle_config is not None:
-        scenario.vehicle_config_data = {
-            k: v.model_dump() for k, v in request.vehicle_config.items()
-        }
+    if body.name is not None:
+        scenario["name"] = body.name
+    if body.description is not None:
+        scenario["description"] = body.description
+    if body.customers is not None:
+        scenario["customers"] = [c.model_dump() for c in body.customers]
+    if body.vehicle_config is not None:
+        scenario["vehicle_config"] = {k: v.model_dump() for k, v in body.vehicle_config.items()}
 
-    # 更新求解参数
-    if request.params is not None:
-        scenario.params_data = request.params.model_dump()
-
-    # 更新客户数据：增量更新，对比差异后只变更变化的部分
-    if request.customers is not None:
-        existing_customers = {
-            c.customer_id: c
-            for c in db.query(Customer).filter(Customer.scenario_id == scenario_id).all()
-        }
-        incoming_ids = {c.id for c in request.customers}
-
-        # 删除不再存在的客户
-        for cust_id in set(existing_customers.keys()) - incoming_ids:
-            db.delete(existing_customers[cust_id])
-
-        # 新增或更新客户
-        for customer_data in request.customers:
-            if customer_data.id in existing_customers:
-                # 更新现有客户
-                cust = existing_customers[customer_data.id]
-                cust.name = customer_data.name
-                cust.lat = customer_data.lat
-                cust.lon = customer_data.lon
-                cust.demand = customer_data.demand
-                cust.service_time_min = customer_data.service_time_min
-                cust.tw_earliest = customer_data.tw_earliest
-                cust.tw_latest = customer_data.tw_latest
-            else:
-                # 新增客户
-                customer = Customer(
-                    scenario_id=scenario_id,
-                    customer_id=customer_data.id,
-                    name=customer_data.name,
-                    lat=customer_data.lat,
-                    lon=customer_data.lon,
-                    demand=customer_data.demand,
-                    service_time_min=customer_data.service_time_min,
-                    tw_earliest=customer_data.tw_earliest,
-                    tw_latest=customer_data.tw_latest,
-                )
-                db.add(customer)
-
-    try:
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail=f"场景更新失败，数据冲突: {exc.orig}",
-        ) from exc
-    db.refresh(scenario)
-    _invalidate_scenarios_cache()
+    scenario["updated_at"] = datetime.now()
 
     return ScenarioResponse(
-        id=scenario.id,
-        name=scenario.name,
-        description=scenario.description,
-        customer_count=len(scenario.customers),
-        solution_count=len(scenario.solutions),
-        created_at=scenario.created_at,
-        updated_at=scenario.updated_at,
+        id=scenario_id,
+        name=scenario["name"],
+        description=scenario.get("description"),
+        customer_count=len(scenario.get("customers", [])),
+        solution_count=len(scenario.get("solutions", [])),
+        created_at=scenario["created_at"],
+        updated_at=scenario["updated_at"],
     )
 
 
@@ -316,24 +183,20 @@ async def update_scenario(
     "/{scenario_id}",
     summary="删除场景",
 )
+@limiter.limit("10/minute")
 async def delete_scenario(
+    request: Request,
     scenario_id: int,
-    db: Session = Depends(get_db),  # noqa: B008
+    current_user: dict = Depends(get_current_user),
 ) -> dict:
-    """删除指定场景。"""
-    scenario = db.query(Scenario).filter(Scenario.id == scenario_id).first()
-    if not scenario:
-        raise HTTPException(status_code=404, detail=f"场景不存在: {scenario_id}")
+    """
+    删除指定场景。
+    
+    需要认证：是（API Key 或 JWT Token）
+    速率限制：10/minute
+    """
+    if scenario_id not in _scenarios_db:
+        raise HTTPException(status_code=404, detail=f"场景不存在：{scenario_id}")
 
-    db.delete(scenario)
-    try:
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail=f"场景删除失败，存在关联数据: {exc.orig}",
-        ) from exc
-    _invalidate_scenarios_cache()
-
+    del _scenarios_db[scenario_id]
     return {"message": f"场景 {scenario_id} 已删除"}

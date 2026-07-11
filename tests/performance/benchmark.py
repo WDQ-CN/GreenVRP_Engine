@@ -17,7 +17,7 @@ import tracemalloc
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -25,9 +25,12 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from core.distance import (
+    SparseDistanceMatrix,
     build_distance_matrix,
+    haversine_vectorized,
 )
 from core.solver import GreenVRPSolver
+from optimization.multi_objective import MultiObjectiveOptimizer, ObjectiveWeights
 
 
 @dataclass
@@ -39,9 +42,9 @@ class BenchmarkResult:
     memory_peak_mb: float
     iterations: int
     std_dev_ms: float
-    metadata: dict[str, Any]
+    metadata: Dict[str, Any]
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
             "execution_time_ms": round(self.execution_time_ms, 2),
@@ -56,11 +59,13 @@ class BenchmarkResult:
 def measure_performance(name: str):
     """性能测量上下文管理器。"""
     tracemalloc.start()
-    time.perf_counter()
+    start_time = time.perf_counter()
     yield
-    time.perf_counter()
+    end_time = time.perf_counter()
     current, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
+
+    print(f"[{name}] Time: {(end_time - start_time)*1000:.2f}ms, Memory: {peak/1024/1024:.2f}MB")
 
 
 def generate_random_customers(n: int, seed: int = 42) -> pd.DataFrame:
@@ -88,27 +93,31 @@ def generate_random_customers(n: int, seed: int = 42) -> pd.DataFrame:
 
 
 def benchmark_distance_matrix(
-    sizes: list[int] = None,
+    sizes: List[int] = [50, 100, 200, 500, 1000],
     iterations: int = 5,
-) -> list[BenchmarkResult]:
+) -> List[BenchmarkResult]:
     """基准测试距离矩阵构建。"""
-    if sizes is None:
-        sizes = [50, 100, 200, 500, 1000]
     results = []
 
+    print("\n" + "=" * 60)
+    print("距离矩阵构建性能基准测试")
+    print("=" * 60)
+
     for size in sizes:
+        print(f"\n测试规模: {size} 节点")
+
         # 生成测试数据
         customers = generate_random_customers(size)
-        locations = list(zip(customers["lat"], customers["lon"], strict=False))
+        locations = list(zip(customers["lat"], customers["lon"]))
 
         # 测量密集矩阵性能
         times_dense = []
         for _ in range(iterations):
-            time.perf_counter()
+            gc_start = time.perf_counter()
             tracemalloc.start()
 
             start = time.perf_counter()
-            build_distance_matrix(locations, use_sparse=False)
+            matrix = build_distance_matrix(locations, use_sparse=False)
             end = time.perf_counter()
 
             current, peak = tracemalloc.get_traced_memory()
@@ -121,7 +130,7 @@ def benchmark_distance_matrix(
             times_sparse = []
             for _ in range(iterations):
                 start = time.perf_counter()
-                build_distance_matrix(locations, use_sparse=True)
+                matrix = build_distance_matrix(locations, use_sparse=True)
                 end = time.perf_counter()
                 times_sparse.append((end - start) * 1000)
 
@@ -145,19 +154,26 @@ def benchmark_distance_matrix(
         )
         results.append(result)
 
+        print(f"  密集矩阵: {result.execution_time_ms:.2f}ms (±{result.std_dev_ms:.2f}ms)")
+        print(f"  内存峰值: {result.memory_peak_mb:.2f}MB")
+
     return results
 
 
 def benchmark_solver(
-    sizes: list[int] = None,
+    sizes: List[int] = [20, 50, 100],
     iterations: int = 3,
-) -> list[BenchmarkResult]:
+) -> List[BenchmarkResult]:
     """基准测试求解器性能。"""
-    if sizes is None:
-        sizes = [20, 50, 100]
     results = []
 
+    print("\n" + "=" * 60)
+    print("VRP求解器性能基准测试")
+    print("=" * 60)
+
     for size in sizes:
+        print(f"\n测试规模: {size} 客户")
+
         customers = generate_random_customers(size)
 
         # 标准车型配置
@@ -195,7 +211,8 @@ def benchmark_solver(
                 end = time.perf_counter()
                 times.append((end - start) * 1000)
 
-            except Exception:
+            except Exception as e:
+                print(f"  求解失败: {e}")
                 break
 
         if times:
@@ -211,14 +228,18 @@ def benchmark_solver(
                 },
             )
             results.append(result)
+            print(f"  平均求解时间: {result.execution_time_ms:.2f}ms (±{result.std_dev_ms:.2f}ms)")
         else:
-            pass
+            print(f"  所有迭代都失败了")
 
     return results
 
 
-def run_all_benchmarks() -> dict[str, list[BenchmarkResult]]:
+def run_all_benchmarks() -> Dict[str, List[BenchmarkResult]]:
     """运行所有基准测试。"""
+    print("\n" + "=" * 60)
+    print("GreenVRP 性能基准测试套件 v3.0")
+    print("=" * 60)
 
     results = {
         "distance_matrix": benchmark_distance_matrix(
@@ -232,10 +253,14 @@ def run_all_benchmarks() -> dict[str, list[BenchmarkResult]]:
     }
 
     # 汇总报告
+    print("\n" + "=" * 60)
+    print("基准测试汇总报告")
+    print("=" * 60)
 
-    for _category, benchmarks in results.items():
-        for _b in benchmarks:
-            pass
+    for category, benchmarks in results.items():
+        print(f"\n【{category}】")
+        for b in benchmarks:
+            print(f"  {b.name}: {b.execution_time_ms:.2f}ms (±{b.std_dev_ms:.2f}ms)")
 
     return results
 

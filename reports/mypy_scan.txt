@@ -1,6 +1,0 @@
-﻿frontend\config.py: error: Duplicate module named "config" (also at ".\config\__init__.py")
-frontend\config.py: note: See https://mypy.readthedocs.io/en/stable/running_mypy.html#mapping-file-paths-to-modules for more info
-frontend\config.py: note: Common resolutions include:
-frontend\config.py: note:     a) using `--exclude` to avoid checking one of them,
-frontend\config.py: note:     b) adding `__init__.py` somewhere,
-frontend\config.py: note:     c) using `--explicit-package-bases` or adjusting `MYPYPATH`

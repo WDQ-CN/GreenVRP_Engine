@@ -16,7 +16,6 @@ from .response import (
     HealthResponse,
     JobStatusResponse,
     RouteData,
-    ScenarioDetailResponse,
     ScenarioResponse,
     SolutionData,
     SolveResponse,
@@ -38,7 +37,6 @@ __all__ = [
     "RouteData",
     "StopData",
     "ScenarioResponse",
-    "ScenarioDetailResponse",
     "JobStatusResponse",
     "HealthResponse",
 ]

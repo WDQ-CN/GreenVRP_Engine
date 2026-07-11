@@ -3,8 +3,10 @@
 """
 
 import folium
+import numpy as np
 import pandas as pd
 import streamlit as st
+from folium import plugins
 
 # 企业配色
 ENTERPRISE_COLORS = {
@@ -69,14 +71,14 @@ def create_enterprise_map(customers_df=None, solution=None, vehicle_config=None)
                     popup=f"""
                     <div style="font-family: Arial, sans-serif;">
                         <strong>{vehicle_type}</strong><br>
-                        距离: {route["distance_km"]:.1f} km<br>
-                        载重: {route.get("total_demand", 0)} 件
+                        距离: {route['distance_km']:.1f} km<br>
+                        载重: {route.get('total_demand', 0)} 件
                     </div>
                     """,
                 ).add_to(m)
 
             # 绘制站点
-            for _i, stop in enumerate(stops):
+            for i, stop in enumerate(stops):
                 node = stop.get("node", 0)
                 lat = stop["lat"]
                 lon = stop["lon"]
@@ -101,11 +103,11 @@ def create_enterprise_map(customers_df=None, solution=None, vehicle_config=None)
 
                     popup_html = f"""
                     <div style="font-family: Arial, sans-serif;">
-                        <strong>{stop.get("customer_name", f"客户{node}")}</strong><br>
+                        <strong>{stop.get('customer_name', f'客户{node}')}</strong><br>
                         <hr style="border: 1px solid #ddd; margin: 8px 0;">
-                        📦 需求量: {stop.get("demand", 0)} 件<br>
-                        ⏰ 到达时间: {stop.get("arrival_time", 0)} 分钟<br>
-                        📅 时间窗: {stop.get("tw_earliest", 0)} - {stop.get("tw_latest", 0)}
+                        📦 需求量: {stop.get('demand', 0)} 件<br>
+                        ⏰ 到达时间: {stop.get('arrival_time', 0)} 分钟<br>
+                        📅 时间窗: {stop.get('tw_earliest', 0)} - {stop.get('tw_latest', 0)}
                     """
 
                     if is_late:
@@ -141,15 +143,15 @@ def create_enterprise_map(customers_df=None, solution=None, vehicle_config=None)
         ">
             <strong style="color: #333; margin-bottom: 8px; display: block;">车型图例</strong>
             <div style="margin-bottom: 4px;">
-                <span style="background: {route_colors["4.2m"]}; width: 20px; height: 3px; display: inline-block; margin-right: 8px;"></span>
+                <span style="background: {route_colors['4.2m']}; width: 20px; height: 3px; display: inline-block; margin-right: 8px;"></span>
                 4.2m 小型车
             </div>
             <div style="margin-bottom: 4px;">
-                <span style="background: {route_colors["7.6m"]}; width: 20px; height: 3px; display: inline-block; margin-right: 8px;"></span>
+                <span style="background: {route_colors['7.6m']}; width: 20px; height: 3px; display: inline-block; margin-right: 8px;"></span>
                 7.6m 中型车
             </div>
             <div>
-                <span style="background: {route_colors["9.6m"]}; width: 20px; height: 3px; display: inline-block; margin-right: 8px;"></span>
+                <span style="background: {route_colors['9.6m']}; width: 20px; height: 3px; display: inline-block; margin-right: 8px;"></span>
                 9.6m 大型车
             </div>
         </div>
@@ -157,19 +159,21 @@ def create_enterprise_map(customers_df=None, solution=None, vehicle_config=None)
         m.get_root().html.add_child(folium.Element(legend_html))
 
     elif customers_df is not None:
-        # 只显示客户位置
-        for _, row in customers_df.iterrows():
-            if row["id"] == 0:
+        # 只显示客户位置 (使用 NumPy 向量化优化)
+        customer_data = customers_df[["id", "lat", "lon", "name"]].values
+        for row in customer_data:
+            cust_id, lat, lon, name = int(row[0]), row[1], row[2], row[3]
+            if cust_id == 0:
                 folium.Marker(
-                    [row["lat"], row["lon"]],
-                    popup=row["name"],
+                    [lat, lon],
+                    popup=name,
                     icon=folium.Icon(color="darkred", icon="warehouse", prefix="fa"),
                 ).add_to(m)
             else:
                 folium.CircleMarker(
-                    [row["lat"], row["lon"]],
+                    [lat, lon],
                     radius=8,
-                    popup=row["name"],
+                    popup=name,
                     color=ENTERPRISE_COLORS["accent"],
                     fill=True,
                     fillColor=ENTERPRISE_COLORS["accent"],
@@ -264,10 +268,10 @@ def display_route_details(solution):
                 if stop.get("node", 0) == 0:  # 跳过仓库
                     continue
 
-                stop.get("arrival_time", 0)
-                stop.get("tw_earliest", 0)
-                stop.get("tw_latest", 0)
-                stop.get("is_late", False)
+                arrival_time = stop.get("arrival_time", 0)
+                tw_earliest = stop.get("tw_earliest", 0)
+                tw_latest = stop.get("tw_latest", 0)
+                is_late = stop.get("is_late", False)
 
                 # stops_data.append({
                 #     '节点': stop.get('node', 0),

@@ -7,14 +7,6 @@
 
 ## [未发布]
 
-### 规范化
-- 统一 Python 代码风格：修复全部 Ruff 违规，配置 Ruff 排除项与 FastAPI B008 忽略
-- 统一启动入口：删除 `start_fast.py`、`start_optimized.py`、`app.py`，`start.py` 作为唯一 CLI 入口
-- 修复 `optimization/carbon_aware.py` 单元测试，使用 `MockSolverService` 替代裸函数
-- 前端日志规范化：新增 `web/src/lib/logger.ts`，调试日志仅在开发环境输出
-- 依赖管理：运行时依赖统一至 `pyproject.toml`
-- 文档同步：更新 `README.md`、`DEVELOPER.md` 中的安装与启动说明
-
 ### 计划中
 - 机器学习需求预测
 - 多仓库支持

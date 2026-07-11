@@ -2,6 +2,9 @@
 企业简约风格图表视图组件
 """
 
+import numpy as np
+import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -29,7 +32,7 @@ def enterprise_chart_template():
         "font": {"family": "Arial, sans-serif", "size": 12, "color": "#2C3E50"},
         "paper_bgcolor": "white",
         "plot_bgcolor": "white",
-        "margin": {"l": 10, "r": 10, "t": 10, "b": 10},
+        "margin": dict(l=10, r=10, t=10, b=10),
         "xaxis": {
             "gridcolor": "#ECF0F1",
             "zerolinecolor": "#ECF0F1",
@@ -106,7 +109,7 @@ def create_cost_comparison_chart(solutions_history):
         return None
 
     names = [sol["name"] for sol in solutions_history]
-    [sol["cost_result"]["total_cost"] for sol in solutions_history]
+    total_costs = [sol["cost_result"]["total_cost"] for sol in solutions_history]
     transport_costs = [sol["cost_result"]["transport_cost"] for sol in solutions_history]
     carbon_costs = [sol["cost_result"].get("carbon_cost", 0) for sol in solutions_history]
     penalty_costs = [sol["cost_result"]["penalty_cost"] for sol in solutions_history]
@@ -183,7 +186,7 @@ def create_performance_comparison_chart(solutions_history):
     names = [sol["name"] for sol in solutions_history]
     solve_times = [sol["solve_time"] for sol in solutions_history]
     distances = [sol["solution"]["total_distance"] for sol in solutions_history]
-    [sol["cost_result"]["carbon_emission_kg"] for sol in solutions_history]
+    carbon_emissions = [sol["cost_result"]["carbon_emission_kg"] for sol in solutions_history]
 
     fig = go.Figure()
 
@@ -223,19 +226,19 @@ def create_performance_comparison_chart(solutions_history):
         barmode="group",
         height=500,
         xaxis_title="求解方案",
-        yaxis={
-            "title": "求解时间 (秒)",
-            "titlefont": {"color": ENTERPRISE_COLORS["accent"]},
-            "tickfont": {"color": ENTERPRISE_COLORS["accent"]},
-        },
-        yaxis2={
-            "title": "总距离 (km)",
-            "titlefont": {"color": ENTERPRISE_COLORS["success"]},
-            "tickfont": {"color": ENTERPRISE_COLORS["success"]},
-            "overlaying": "y",
-            "side": "right",
-        },
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+        yaxis=dict(
+            title="求解时间 (秒)",
+            titlefont=dict(color=ENTERPRISE_COLORS["accent"]),
+            tickfont=dict(color=ENTERPRISE_COLORS["accent"]),
+        ),
+        yaxis2=dict(
+            title="总距离 (km)",
+            titlefont=dict(color=ENTERPRISE_COLORS["success"]),
+            tickfont=dict(color=ENTERPRISE_COLORS["success"]),
+            overlaying="y",
+            side="right",
+        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         **enterprise_chart_template(),
     )
 
@@ -323,12 +326,14 @@ def create_vehicle_utilization_chart(solution, vehicle_config):
                 name=v_type,
                 x=["已使用", "未使用"],
                 y=[used, unused],
-                marker_color=ENTERPRISE_COLORS["accent"]
-                if v_type == "4.2m"
-                else (
-                    ENTERPRISE_COLORS["success"]
-                    if v_type == "7.6m"
-                    else ENTERPRISE_COLORS["primary"]
+                marker_color=(
+                    ENTERPRISE_COLORS["accent"]
+                    if v_type == "4.2m"
+                    else (
+                        ENTERPRISE_COLORS["success"]
+                        if v_type == "7.6m"
+                        else ENTERPRISE_COLORS["primary"]
+                    )
                 ),
                 text=[used, unused],
                 textposition="auto",
@@ -427,7 +432,7 @@ def create_efficiency_indicators(cost_result, solution):
         from core.cost import calculate_cost_efficiency_metrics
 
         efficiency = calculate_cost_efficiency_metrics(cost_result, solution)
-    except Exception:  # noqa: B001
+    except:
         efficiency = {
             "cost_per_km": 0,
             "cost_per_customer": 0,
@@ -487,7 +492,7 @@ def enterprise_metric_row(metrics):
     num_columns = len(metrics)
     columns = st.columns(num_columns)
 
-    for _i, (col, metric) in enumerate(zip(columns, metrics, strict=False)):
+    for i, (col, metric) in enumerate(zip(columns, metrics)):
         with col:
             delta_type = metric.get("delta_type", "neutral")
             delta_class = ""
@@ -504,8 +509,8 @@ def enterprise_metric_row(metrics):
             st.markdown(
                 f"""
             <div class="metric-card">
-                <div class="metric-title">{metric["title"]}</div>
-                <div class="metric-value">{metric["value"]}</div>
+                <div class="metric-title">{metric['title']}</div>
+                <div class="metric-value">{metric['value']}</div>
                 {delta_html}
             </div>
             """,

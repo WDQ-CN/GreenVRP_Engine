@@ -5,7 +5,7 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from .cost import CostResult
 
@@ -28,16 +28,16 @@ class Stop:
     """
 
     node: int
-    lat: float | None = None
-    lon: float | None = None
-    arrival_time: float | None = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    arrival_time: Optional[float] = None
     service_time: float = 0.0
-    tw_earliest: float | None = None
-    tw_latest: float | None = None
-    customer_id: int | None = None
+    tw_earliest: Optional[float] = None
+    tw_latest: Optional[float] = None
+    customer_id: Optional[int] = None
     demand: float = 0.0
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
         result = {"node": self.node}
         if self.lat is not None:
@@ -78,9 +78,9 @@ class Route:
     distance_km: float = 0.0
     capacity: float = 0.0
     total_demand: float = 0.0
-    stops: list[Stop] = field(default_factory=list)
+    stops: List[Stop] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
         return {
             "vehicle_id": self.vehicle_id,
@@ -92,7 +92,7 @@ class Route:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Route":
+    def from_dict(cls, data: Dict[str, Any]) -> "Route":
         """从字典创建实例。"""
         stops = []
         for s in data.get("stops", []):
@@ -137,13 +137,13 @@ class Solution:
     """
 
     solution_status: str = "UNKNOWN"
-    routes: list[Route] = field(default_factory=list)
-    vehicles_used: dict[str, int] = field(default_factory=dict)
+    routes: List[Route] = field(default_factory=list)
+    vehicles_used: Dict[str, int] = field(default_factory=dict)
     total_distance: float = 0.0
     total_late_minutes: float = 0.0
-    cost_data: CostResult | None = None
+    cost_data: Optional[CostResult] = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
         return {
             "solution_status": self.solution_status,
@@ -155,7 +155,7 @@ class Solution:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Solution":
+    def from_dict(cls, data: Dict[str, Any]) -> "Solution":
         """从字典创建实例。"""
         routes = []
         for r in data.get("routes", []):

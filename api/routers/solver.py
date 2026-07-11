@@ -2,39 +2,20 @@
 求解器路由
 
 提供同步/异步求解端点。
-使用依赖注入获取 SolverService，支持测试时替换为 Mock。
 """
 
-import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, Dict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-from core.interfaces import ISolverService
-from exceptions.errors import GreenVRPError, JobNotFoundError
-
-from ..dependencies import get_solver_service
 from ..schemas import JobStatusResponse, SolveRequest, SolveResponse
-
-logger = logging.getLogger(__name__)
+from ..security.auth import get_current_user
+from ..security.rate_limit import RATE_LIMIT_SOLVER, limiter
+from ..services import solver_service
+from config.security import security_config
 
 router = APIRouter(prefix="/solve", tags=["求解器"])
-jobs_router = APIRouter(prefix="/jobs", tags=["任务管理"])
-
-
-def _build_solver_payload(request: SolveRequest) -> dict[str, Any]:
-    """将 Pydantic 请求转换为 solver_service 所需字典格式。"""
-    customers = [c.model_dump() for c in request.customers]
-    vehicle_config = None
-    if request.vehicle_config:
-        vehicle_config = {k: v.model_dump() for k, v in request.vehicle_config.items()}
-    params = request.params.model_dump() if request.params else None
-    return {
-        "customers": customers,
-        "vehicle_config": vehicle_config,
-        "params": params,
-    }
 
 
 @router.post(
@@ -43,9 +24,11 @@ def _build_solver_payload(request: SolveRequest) -> dict[str, Any]:
     summary="同步求解",
     description="提交求解请求并等待结果返回",
 )
+@limiter.limit(RATE_LIMIT_SOLVER)
 async def solve_sync(
-    request: SolveRequest,
-    solver: ISolverService = Depends(get_solver_service),
+    request: Request,
+    body: SolveRequest,
+    current_user: dict = Depends(get_current_user),
 ) -> SolveResponse:
     """
     同步求解 VRPTW 问题。
@@ -53,18 +36,32 @@ async def solve_sync(
     - **customers**: 客户数据列表（必须包含仓库）
     - **vehicle_config**: 可选，车型配置
     - **params**: 可选，求解参数
+    
+    需要认证：是（API Key 或 JWT Token）
+    速率限制：{RATE_LIMIT_SOLVER}
     """
-    customer_count = len(request.customers)
-    logger.info("接收到同步求解请求: customers=%d", customer_count)
-    payload = _build_solver_payload(request)
     try:
-        # 执行求解
-        result = solver.solve_sync(**payload)
+        # 转换请求格式
+        customers = [c.model_dump() for c in body.customers]
+        vehicle_config = None
+        if body.vehicle_config:
+            vehicle_config = {k: v.model_dump() for k, v in body.vehicle_config.items()}
+        params = body.params.model_dump() if body.params else None
 
-        logger.info(
-            "同步求解请求完成: customers=%d, solve_time=%.2fs",
-            customer_count,
-            result.get("solve_time_seconds", 0),
+        # 验证 callback_url 安全性
+        if body.callback_url:
+            is_valid, error_msg = security_config.validate_callback_url(body.callback_url)
+            if not is_valid:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"回调 URL 不安全：{error_msg}",
+                )
+
+        # 执行求解
+        result = solver_service.solve_sync(
+            customers=customers,
+            vehicle_config=vehicle_config,
+            params=params,
         )
 
         # 构建响应
@@ -77,51 +74,55 @@ async def solve_sync(
             completed_at=datetime.now(),
         )
 
-    except GreenVRPError:
-        logger.warning("同步求解业务异常: customers=%d", customer_count)
-        # 业务异常由全局异常处理器统一处理，不泄露内部细节
+    except HTTPException:
         raise
-    except Exception:
-        logger.exception("同步求解失败: customers=%d", customer_count)
-        raise HTTPException(
-            status_code=500,
-            detail="求解失败，请稍后重试或联系管理员",
-        ) from None
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"求解失败：{str(e)}")
 
 
 @router.post(
     "/async",
-    response_model=dict[str, Any],
+    response_model=Dict[str, Any],
     summary="异步求解",
-    description="提交异步求解任务，立即返回任务ID",
+    description="提交异步求解任务，立即返回任务 ID",
 )
+@limiter.limit(RATE_LIMIT_SOLVER)
 async def solve_async(
-    request: SolveRequest,
-    solver: ISolverService = Depends(get_solver_service),
-) -> dict[str, Any]:
+    request: Request,
+    body: SolveRequest,
+    current_user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
     """
     异步求解 VRPTW 问题。
 
-    立即返回任务ID，可通过 /jobs/{job_id} 查询状态。
+    立即返回任务 ID，可通过 /jobs/{job_id} 查询状态。
+    
+    需要认证：是（API Key 或 JWT Token）
+    速率限制：{RATE_LIMIT_SOLVER}
     """
-    customer_count = len(request.customers)
-    logger.info(
-        "接收到异步求解请求: customers=%d, callback=%s",
-        customer_count,
-        request.callback_url or "无",
-    )
-    payload = _build_solver_payload(request)
     try:
-        # 创建异步任务（后台执行，不阻塞事件循环）
-        job_id = await solver.solve_async(
-            **payload,
-            callback_url=request.callback_url,
-        )
+        # 转换请求格式
+        customers = [c.model_dump() for c in body.customers]
+        vehicle_config = None
+        if body.vehicle_config:
+            vehicle_config = {k: v.model_dump() for k, v in body.vehicle_config.items()}
+        params = body.params.model_dump() if body.params else None
 
-        logger.info(
-            "异步任务已创建: job_id=%s, customers=%d",
-            job_id,
-            customer_count,
+        # 验证 callback_url 安全性
+        if body.callback_url:
+            is_valid, error_msg = security_config.validate_callback_url(body.callback_url)
+            if not is_valid:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"回调 URL 不安全：{error_msg}",
+                )
+
+        # 创建异步任务
+        job_id = solver_service.solve_async(
+            customers=customers,
+            vehicle_config=vehicle_config,
+            params=params,
+            callback_url=body.callback_url,
         )
 
         return {
@@ -130,40 +131,35 @@ async def solve_async(
             "message": "任务已创建，请通过 /api/v1/jobs/{job_id} 查询状态",
         }
 
-    except GreenVRPError:
-        logger.warning("异步任务创建业务异常: customers=%d", customer_count)
-        # 业务异常由全局异常处理器统一处理
+    except HTTPException:
         raise
-    except Exception:
-        logger.exception("异步任务创建失败: customers=%d", customer_count)
-        raise HTTPException(
-            status_code=500,
-            detail="任务创建失败，请稍后重试或联系管理员",
-        ) from None
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"任务创建失败：{str(e)}")
 
 
-@jobs_router.get(
-    "/{job_id}",
+@router.get(
+    "/jobs/{job_id}",
     response_model=JobStatusResponse,
     summary="查询任务状态",
 )
+@limiter.limit("100/minute")
 async def get_job_status(
+    request: Request,
     job_id: str,
-    solver: ISolverService = Depends(get_solver_service),
+    current_user: dict = Depends(get_current_user),
 ) -> JobStatusResponse:
     """
     查询异步求解任务的状态。
 
-    - **job_id**: 任务ID
+    - **job_id**: 任务 ID
+    
+    需要认证：是（API Key 或 JWT Token）
     """
-    logger.debug("查询任务状态: job_id=%s", job_id)
-    job = solver.get_job_status(job_id)
+    job = solver_service.get_job_status(job_id)
 
     if not job:
-        logger.warning("任务不存在: job_id=%s", job_id)
-        raise JobNotFoundError(job_id)
+        raise HTTPException(status_code=404, detail=f"任务不存在：{job_id}")
 
-    logger.debug("任务状态查询结果: job_id=%s, status=%s", job_id, job["status"])
     return JobStatusResponse(
         job_id=job_id,
         status=job["status"],
@@ -174,43 +170,35 @@ async def get_job_status(
     )
 
 
-@jobs_router.get(
-    "/{job_id}/result",
+@router.get(
+    "/jobs/{job_id}/result",
     response_model=SolveResponse,
     summary="获取任务结果",
 )
+@limiter.limit("100/minute")
 async def get_job_result(
+    request: Request,
     job_id: str,
-    solver: ISolverService = Depends(get_solver_service),
+    current_user: dict = Depends(get_current_user),
 ) -> SolveResponse:
     """
     获取已完成任务的求解结果。
 
-    - **job_id**: 任务ID
+    - **job_id**: 任务 ID
+    
+    需要认证：是（API Key 或 JWT Token）
     """
-    logger.debug("获取任务结果: job_id=%s", job_id)
-    job = solver.get_job_status(job_id)
+    job = solver_service.get_job_status(job_id)
 
     if not job:
-        logger.warning("任务结果查询失败: job_id=%s 不存在", job_id)
-        raise JobNotFoundError(job_id)
+        raise HTTPException(status_code=404, detail=f"任务不存在：{job_id}")
 
     if job["status"] != "completed":
-        logger.warning(
-            "任务结果查询失败: job_id=%s 状态=%s（需 completed）",
-            job_id,
-            job["status"],
-        )
         raise HTTPException(
             status_code=400,
-            detail=f"任务未完成，当前状态: {job['status']}",
+            detail=f"任务未完成，当前状态：{job['status']}",
         )
 
-    logger.info(
-        "任务结果返回: job_id=%s, status=%s",
-        job_id,
-        job["status"],
-    )
     return SolveResponse(
         job_id=job_id,
         status="completed",

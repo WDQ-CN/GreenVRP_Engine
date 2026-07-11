@@ -21,7 +21,7 @@ CHART_CONFIG = {
     "font": {"family": "Arial, sans-serif", "size": 12, "color": ENTERPRISE_COLORS["primary"]},
     "paper_bgcolor": "white",
     "plot_bgcolor": "white",
-    "margin": {"l": 10, "r": 10, "t": 10, "b": 10},
+    "margin": dict(l=10, r=10, t=10, b=10),
     "xaxis": {
         "gridcolor": ENTERPRISE_COLORS["light"],
         "zerolinecolor": ENTERPRISE_COLORS["light"],
@@ -128,10 +128,7 @@ STRATEGY_CONFIG = {
 
 # ========== 地图配置 ==========
 MAP_CONFIG = {
-    "default_center": {
-        "lat": 39.9042,  # 北京
-        "lon": 116.4074,
-    },
+    "default_center": {"lat": 39.9042, "lon": 116.4074},  # 北京
     "default_zoom": 12,
     "tiles": "OpenStreetMap",
     "marker_styles": {

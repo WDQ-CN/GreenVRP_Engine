@@ -4,6 +4,7 @@
 统一管理物理常量和默认计算参数。
 """
 
+from typing import Dict
 
 # ==================== 物理常量 ====================
 
@@ -14,7 +15,7 @@ EARTH_RADIUS_KM: float = 6371.0
 DIESEL_CO2_FACTOR: float = 2.63
 
 # 不同车型的碳排放基线（kg CO2 / km）
-VEHICLE_CARBON_BASELINE: dict[str, float] = {
+VEHICLE_CARBON_BASELINE: Dict[str, float] = {
     "4.2m": 8.0,
     "7.6m": 12.0,
     "9.6m": 16.0,
@@ -24,7 +25,7 @@ VEHICLE_CARBON_BASELINE: dict[str, float] = {
 # ==================== 默认参数 ====================
 
 # 默认全局参数
-DEFAULT_PARAMS: dict[str, float] = {
+DEFAULT_PARAMS: Dict[str, float] = {
     "fuel_price": 7.5,  # 油价（元/升）
     "hourly_wage": 50.0,  # 时薪（元/小时）
     "carbon_price": 0.08,  # 碳价（元/kg CO2）

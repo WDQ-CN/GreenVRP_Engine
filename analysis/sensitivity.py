@@ -4,12 +4,10 @@
 分析模型参数变化对求解结果的影响，帮助决策者理解参数的重要性。
 """
 
-import copy
 import logging
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -29,22 +27,22 @@ class SensitivityResult:
     base_value: float
     """基准值"""
 
-    test_values: list[float]
+    test_values: List[float]
     """测试值列表"""
 
-    results: list[dict[str, Any]]
+    results: List[Dict[str, Any]]
     """各测试值的求解结果"""
 
-    sensitivities: dict[str, float]
+    sensitivities: Dict[str, float]
     """各指标对参数的敏感度系数"""
 
-    impact_ranking: list[tuple[str, float]]
+    impact_ranking: List[Tuple[str, float]]
     """影响程度排序 [(指标名, 敏感度)]"""
 
     summary: pd.DataFrame
     """汇总数据表"""
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
         return {
             "parameter_name": self.parameter_name,
@@ -113,9 +111,9 @@ class SensitivityAnalyzer:
     def __init__(
         self,
         solver_func: Callable,
-        base_params: dict[str, float],
-        base_vehicle_config: dict[str, dict[str, Any]],
-        base_customers: list[dict[str, Any]],
+        base_params: Dict[str, float],
+        base_vehicle_config: Dict[str, Dict[str, Any]],
+        base_customers: List[Dict[str, Any]],
     ):
         """
         初始化敏感度分析器。
@@ -134,7 +132,7 @@ class SensitivityAnalyzer:
     def analyze_parameter(
         self,
         parameter: str,
-        values: list[float] | None = None,
+        values: Optional[List[float]] = None,
         num_points: int = 7,
         parallel: bool = True,
     ) -> SensitivityResult:
@@ -194,9 +192,9 @@ class SensitivityAnalyzer:
     def _run_sensitivity_analysis(
         self,
         parameter: str,
-        values: list[float],
+        values: List[float],
         parallel: bool,
-    ) -> list[dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         """
         执行敏感度分析求解。
         """
@@ -235,7 +233,7 @@ class SensitivityAnalyzer:
         self,
         parameter: str,
         value: float,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         使用指定参数值求解。
         """
@@ -243,8 +241,12 @@ class SensitivityAnalyzer:
         params = self.base_params.copy()
         params[parameter] = value
 
-        # 特殊处理容量系数（深拷贝避免修改嵌套字典影响原始配置）
-        vehicle_config = copy.deepcopy(self.base_vehicle_config)
+        # 特殊处理容量系数（使用浅拷贝 + 字典推导式避免深拷贝）
+        # vehicle_config 是嵌套字典，需要复制每一层
+        vehicle_config = {
+            v_type: config.copy() 
+            for v_type, config in self.base_vehicle_config.items()
+        }
         if parameter == "vehicle_capacity_factor":
             for v_type in vehicle_config:
                 base_capacity = self.base_vehicle_config[v_type].get("capacity", 100)
@@ -268,10 +270,10 @@ class SensitivityAnalyzer:
 
     def _calculate_sensitivities(
         self,
-        results: list[dict[str, Any]],
-        values: list[float],
+        results: List[Dict[str, Any]],
+        values: List[float],
         base_value: float,
-    ) -> dict[str, float]:
+    ) -> Dict[str, float]:
         """
         计算各指标的敏感度系数。
 
@@ -333,10 +335,10 @@ class SensitivityAnalyzer:
 
     def analyze_multiple_parameters(
         self,
-        parameters: list[str] | None = None,
+        parameters: Optional[List[str]] = None,
         num_points: int = 5,
         parallel: bool = True,
-    ) -> dict[str, SensitivityResult]:
+    ) -> Dict[str, SensitivityResult]:
         """
         分析多个参数的敏感度。
 
@@ -363,9 +365,9 @@ class SensitivityAnalyzer:
 
     def generate_tornado_chart(
         self,
-        results: dict[str, SensitivityResult],
+        results: Dict[str, SensitivityResult],
         metric: str = "total_cost",
-        title: str | None = None,
+        title: Optional[str] = None,
     ) -> go.Figure:
         """
         生成龙卷风图展示参数敏感度。
@@ -440,20 +442,20 @@ class SensitivityAnalyzer:
         )
 
         fig.update_layout(
-            title={"text": title, "font": {"size": 16}},
+            title=dict(text=title, font=dict(size=16)),
             barmode="relative",
             height=max(300, 50 * len(parameters)),
             xaxis_title=f"{SENSITIVITY_METRICS[metric]['name']}变化",
             yaxis_title="参数",
             plot_bgcolor="white",
             showlegend=True,
-            legend={
-                "orientation": "h",
-                "yanchor": "bottom",
-                "y": 1.02,
-                "xanchor": "center",
-                "x": 0.5,
-            },
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="center",
+                x=0.5,
+            ),
         )
 
         return fig
@@ -462,7 +464,7 @@ class SensitivityAnalyzer:
         self,
         result: SensitivityResult,
         metric: str = "total_cost",
-        title: str | None = None,
+        title: Optional[str] = None,
     ) -> go.Figure:
         """
         生成折线图展示参数影响趋势。
@@ -490,8 +492,8 @@ class SensitivityAnalyzer:
                 x=result.test_values,
                 y=metric_values,
                 mode="lines+markers",
-                marker={"size": 10},
-                line={"width": 2},
+                marker=dict(size=10),
+                line=dict(width=2),
                 text=[f"{v:.2f}" for v in metric_values],
                 hovertemplate=(
                     f"{param_config.get('name', '参数值')}: %{{x:.2f}}<br>"
@@ -516,7 +518,7 @@ class SensitivityAnalyzer:
             )
 
         fig.update_layout(
-            title={"text": title, "font": {"size": 16}},
+            title=dict(text=title, font=dict(size=16)),
             xaxis_title=f"{param_config.get('name', result.parameter_name)} ({param_config.get('unit', '')})",
             yaxis_title=f"{metric_config.get('name', metric)} ({metric_config.get('unit', '')})",
             height=400,
@@ -526,7 +528,7 @@ class SensitivityAnalyzer:
         return fig
 
     def generate_sensitivity_heatmap(
-        self, results: dict[str, SensitivityResult], title: str = "参数敏感度热力图"
+        self, results: Dict[str, SensitivityResult], title: str = "参数敏感度热力图"
     ) -> go.Figure:
         """
         生成敏感度热力图。
@@ -564,7 +566,7 @@ class SensitivityAnalyzer:
                     [0.5, "#ffbb33"],  # 中等 - 黄色
                     [1, "#d62728"],  # 高敏感度 - 红色
                 ],
-                colorbar={"title": "敏感度系数"},
+                colorbar=dict(title="敏感度系数"),
                 text=[[f"{v:.3f}" for v in row] for row in sensitivity_matrix],
                 texttemplate="%{text}",
                 textfont={"size": 12},
@@ -572,7 +574,7 @@ class SensitivityAnalyzer:
         )
 
         fig.update_layout(
-            title={"text": title, "font": {"size": 16}},
+            title=dict(text=title, font=dict(size=16)),
             xaxis_title="指标",
             yaxis_title="参数",
             height=max(300, 60 * len(parameters)),

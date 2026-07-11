@@ -5,7 +5,7 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Dict
 
 
 @dataclass
@@ -38,7 +38,7 @@ class CostBreakdown:
             + self.penalty_cost
         )
 
-    def to_dict(self) -> dict[str, float]:
+    def to_dict(self) -> Dict[str, float]:
         """转换为字典。"""
         return {
             "transport_cost": self.transport_cost,
@@ -69,14 +69,14 @@ class CostResult:
     total_distance_km: float = 0.0
     total_time_min: float = 0.0
     vehicle_count: int = 0
-    efficiency_metrics: dict[str, float] = field(default_factory=dict)
+    efficiency_metrics: Dict[str, float] = field(default_factory=dict)
 
     @property
     def total_cost(self) -> float:
         """获取总成本。"""
         return self.breakdown.total_cost
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
         return {
             **self.breakdown.to_dict(),
@@ -88,7 +88,7 @@ class CostResult:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "CostResult":
+    def from_dict(cls, data: Dict[str, Any]) -> "CostResult":
         """从字典创建实例。"""
         breakdown = CostBreakdown(
             transport_cost=data.get("transport_cost", 0.0),
@@ -124,7 +124,7 @@ class CarbonEfficiency:
     carbon_per_customer: float = 0.0
     carbon_per_kg_demand: float = 0.0
 
-    def to_dict(self) -> dict[str, float]:
+    def to_dict(self) -> Dict[str, float]:
         """转换为字典。"""
         return {
             "total_carbon_kg": self.total_carbon_kg,

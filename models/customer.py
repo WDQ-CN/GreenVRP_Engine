@@ -4,7 +4,7 @@
 存储场景中的客户数据。
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -24,7 +24,7 @@ class Customer(Base):
 
     # 关联场景
     scenario_id: Mapped[int] = mapped_column(
-        ForeignKey("scenarios.id"), nullable=False, index=True, comment="所属场景ID"
+        ForeignKey("scenarios.id"), nullable=False, comment="所属场景ID"
     )
     scenario: Mapped["Scenario"] = relationship(back_populates="customers")
 

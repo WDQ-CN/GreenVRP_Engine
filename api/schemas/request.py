@@ -4,6 +4,8 @@ API 请求模型定义
 使用 Pydantic 进行数据验证和序列化。
 """
 
+from typing import Dict, List, Optional
+
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -53,13 +55,13 @@ class SolverParams(BaseModel):
 class SolveRequest(BaseModel):
     """求解请求模型。"""
 
-    customers: list[CustomerData] = Field(..., min_length=2, description="客户数据列表（含仓库）")
-    vehicle_config: dict[str, VehicleConfigItem] | None = Field(
+    customers: List[CustomerData] = Field(..., min_length=2, description="客户数据列表（含仓库）")
+    vehicle_config: Optional[Dict[str, VehicleConfigItem]] = Field(
         default=None, description="车型配置，为空则使用默认配置"
     )
-    params: SolverParams | None = Field(default=None, description="求解参数，为空则使用默认参数")
-    callback_url: str | None = Field(default=None, description="异步求解完成后的回调URL")
-    scenario_name: str | None = Field(
+    params: Optional[SolverParams] = Field(default=None, description="求解参数，为空则使用默认参数")
+    callback_url: Optional[str] = Field(default=None, description="异步求解完成后的回调URL")
+    scenario_name: Optional[str] = Field(
         default=None, max_length=255, description="场景名称，用于保存结果"
     )
 
@@ -103,19 +105,17 @@ class ScenarioCreate(BaseModel):
     """创建场景请求。"""
 
     name: str = Field(..., min_length=1, max_length=255, description="场景名称")
-    description: str | None = Field(default=None, max_length=1000, description="场景描述")
-    customers: list[CustomerData] = Field(..., min_length=2, description="客户数据")
-    vehicle_config: dict[str, VehicleConfigItem] | None = Field(
+    description: Optional[str] = Field(default=None, max_length=1000, description="场景描述")
+    customers: List[CustomerData] = Field(..., min_length=2, description="客户数据")
+    vehicle_config: Optional[Dict[str, VehicleConfigItem]] = Field(
         default=None, description="车型配置"
     )
-    params: SolverParams | None = Field(default=None, description="求解参数")
 
 
 class ScenarioUpdate(BaseModel):
     """更新场景请求。"""
 
-    name: str | None = Field(default=None, min_length=1, max_length=255)
-    description: str | None = Field(default=None, max_length=1000)
-    customers: list[CustomerData] | None = None
-    vehicle_config: dict[str, VehicleConfigItem] | None = None
-    params: SolverParams | None = Field(default=None, description="求解参数")
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    customers: Optional[List[CustomerData]] = None
+    vehicle_config: Optional[Dict[str, VehicleConfigItem]] = None

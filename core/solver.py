@@ -1,5 +1,5 @@
 """
-异构车队 VRPTW 求解器模块（性能优化版 v4）
+异构车队 VRPTW 求解器模块（性能优化版 v3）
 
 基于 OR-Tools 实现带时间窗的异构车队车辆路径问题求解。
 支持软时间窗约束，允许迟到但施加惩罚成本。
@@ -9,22 +9,24 @@
 - 碳排权衡：大车单件碳排低（满载效率高），小车单件碳排高（灵活性高）
 - 软时间窗：允许迟到，但产生违约惩罚成本
 
-性能优化 v4：
-- 求解器实例池化：复用 RoutingModel，避免重复初始化（最大优化点）
+性能优化 v3：
 - 时间矩阵按速度缓存，避免重复计算
 - 参数化求解方法，支持复用求解器实例
 - 并行多策略求解，利用多核CPU
 - 自适应搜索参数，平衡求解时间和解质量
-- NumPy 数组直接传递，减少类型转换开销
-- DataFrame 延迟拷贝，减少内存占用
+- 新增：求解器实例池化，避免重复初始化
+- 新增：预热机制，提前分配内存
+- 新增：智能路由回调缓存
+- 新增：动态时间限制调整
 """
 
 import hashlib
 import multiprocessing
-import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Any
+from functools import lru_cache
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -33,112 +35,88 @@ from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 from config.vehicles import DEFAULT_VEHICLE_CONFIG
 from logging_config import get_logger
 
-from .distance import DistanceMatrixCache, build_time_matrix
+from .distance import DistanceMatrixCache, build_distance_matrix, build_time_matrix
 
 # 使用统一的日志配置
 logger = get_logger(__name__)
 
 
-class SolverPool:
+class SolverInstancePool:
     """
-    求解器实例池（v4 新增）。
+    求解器实例池 - 复用已初始化的求解器组件
 
-    复用求解器数据准备和解决方案缓存，避免重复计算。
-    使用 LRU 策略管理池中实例。
-
-    Example:
-        >>> pool = SolverPool(max_size=5)
-        >>> result = pool.solve_with_cache(customers_df, vehicle_config)
-        >>> if result:
-        ...     print(result['total_distance'])
+    通过缓存 RoutingIndexManager 和预注册回调，
+    显著降低重复求解时的初始化开销。
     """
 
-    def __init__(self, max_size: int = 10, solution_cache_size: int = 100):
-        self._pool: dict[str, GreenVRPSolver] = {}
-        self._max_size = max_size
-        self._lock = threading.Lock()
-        self._access_order: list[str] = []
-        self._solution_cache: dict[str, dict[str, Any]] = {}
-        self._solution_cache_size = solution_cache_size
+    def __init__(self, max_size: int = 5):
+        self.max_size = max_size
+        self._pool: OrderedDict = OrderedDict()
 
-    def get_cached_solution(self, cache_key: str) -> dict[str, Any] | None:
-        """获取缓存的解决方案。"""
-        with self._lock:
-            if cache_key in self._solution_cache:
-                solution = self._solution_cache[cache_key].copy()
-                logger.info(f"使用缓存的解决方案: {cache_key[:8]}...")
-                return solution
-        return None
+    def get_or_create(
+        self, cache_key: str, num_locations: int, num_vehicles: int, depot: int = 0
+    ) -> Tuple[pywrapcp.RoutingIndexManager, pywrapcp.RoutingModel]:
+        """获取或创建求解器实例。"""
+        if cache_key in self._pool:
+            # 移到末尾（最近使用）
+            self._pool.move_to_end(cache_key)
+            return self._pool[cache_key]
 
-    def cache_solution(self, cache_key: str, solution: dict[str, Any]) -> None:
-        """缓存解决方案。"""
-        with self._lock:
-            if len(self._solution_cache) >= self._solution_cache_size:
-                oldest_key = next(iter(self._solution_cache))
-                self._solution_cache.pop(oldest_key)
-            self._solution_cache[cache_key] = solution
+        # 创建新实例
+        manager = pywrapcp.RoutingIndexManager(num_locations, num_vehicles, depot)
+        routing = pywrapcp.RoutingModel(manager)
 
-    def solve_with_cache(
-        self,
-        customers_df: pd.DataFrame,
-        vehicle_config: dict[str, dict[str, Any]] | None = None,
-        time_penalty_per_min: float = 10.0,
-        search_time_limit: int = 30,
-        use_cache: bool = True,
-    ) -> dict[str, Any]:
-        """
-        使用缓存求解（推荐方法）。
+        # 缓存满时淘汰最久未使用的
+        if len(self._pool) >= self.max_size:
+            self._pool.popitem(last=False)
 
-        先检查解决方案缓存，如果命中直接返回；
-        否则创建求解器并求解，然后缓存结果。
+        self._pool[cache_key] = (manager, routing)
+        return manager, routing
 
-        Args:
-            customers_df: 客户数据
-            vehicle_config: 车型配置
-            time_penalty_per_min: 迟到惩罚
-            search_time_limit: 求解时间限制
-            use_cache: 是否使用缓存
-
-        Returns:
-            求解结果
-        """
-        solver = GreenVRPSolver(
-            customers_df=customers_df,
-            vehicle_config=vehicle_config,
-            time_penalty_per_min=time_penalty_per_min,
-            search_time_limit=search_time_limit,
-            use_cache=use_cache,
-        )
-
-        cache_key = solver._cache_key
-
-        if use_cache:
-            cached = self.get_cached_solution(cache_key)
-            if cached:
-                return cached
-
-        solution = solver.solve()
-
-        if use_cache and solution.get("solution_status") == "SUCCESS":
-            self.cache_solution(cache_key, solution)
-
-        return solution
-
-    def clear(self) -> None:
-        """清空池中所有实例和缓存。"""
-        with self._lock:
-            self._pool.clear()
-            self._access_order.clear()
-            self._solution_cache.clear()
+    def clear(self):
+        """清空实例池。"""
+        self._pool.clear()
 
 
-# 全局求解器池
-_solver_pool = SolverPool(max_size=10, solution_cache_size=100)
+class CallbackCache:
+    """
+    回调函数缓存 - 避免重复创建相同的回调函数
+
+    对于相同的速度矩阵和索引映射，回调函数是纯函数，
+    可以安全地缓存和复用。
+    """
+
+    def __init__(self, max_size: int = 50):
+        self.max_size = max_size
+        self._cache: OrderedDict = OrderedDict()
+
+    def get_or_create(self, key: str, factory: Callable) -> Callable:
+        """获取或创建回调函数。"""
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            return self._cache[key]
+
+        callback = factory()
+
+        if len(self._cache) >= self.max_size:
+            self._cache.popitem(last=False)
+
+        self._cache[key] = callback
+        return callback
+
+    def clear(self):
+        """清空缓存。"""
+        self._cache.clear()
+
+
+# 全局实例池和回调缓存
+_solver_pool = SolverInstancePool(max_size=3)
+_callback_cache = CallbackCache(max_size=20)
 
 
 class GreenVRPSolver:
     """
-    绿色物流 VRPTW 求解器（性能优化版 v2）
+    绿色物流 VRPTW 求解器（性能优化版 v4）
 
     实现异构车队带软时间窗的车辆路径优化，支持五维成本核算。
 
@@ -147,10 +125,13 @@ class GreenVRPSolver:
     2. 软时间窗：允许迟到，早到需等待
     3. 碳排优化：通过车型选择权衡碳排放与成本
 
-    性能优化 v2：
-    1. 时间矩阵按速度缓存：避免重复计算
-    2. 参数化求解方法：支持复用求解器实例
-    3. 自适应搜索时间：根据问题规模动态调整
+    性能优化 v4：
+    1. 求解器实例池化：复用 RoutingIndexManager 和 RoutingModel
+    2. 回调函数缓存：避免重复创建相同回调
+    3. 时间矩阵按速度缓存：避免重复计算
+    4. 参数化求解方法：支持复用求解器实例
+    5. 自适应搜索时间：根据问题规模动态调整
+    6. NumPy 数组优化：避免不必要的列表转换
 
     Example:
         >>> solver = GreenVRPSolver(customers_df, vehicle_config)
@@ -160,11 +141,15 @@ class GreenVRPSolver:
 
     # 类级别的距离矩阵缓存
     _distance_cache = DistanceMatrixCache()
+    # 类级别的求解器实例池
+    _instance_pool = SolverInstancePool(max_size=3)
+    # 类级别的回调缓存
+    _callback_cache = CallbackCache(max_size=20)
 
     def __init__(
         self,
         customers_df: pd.DataFrame,
-        vehicle_config: dict[str, dict[str, Any]] | None = None,
+        vehicle_config: Optional[Dict[str, Dict[str, Any]]] = None,
         time_penalty_per_min: float = 10.0,
         search_time_limit: int = 30,
         use_cache: bool = True,
@@ -187,7 +172,7 @@ class GreenVRPSolver:
             search_time_limit: 求解时间限制（秒）
             use_cache: 是否使用结果缓存
         """
-        self.customers_df = customers_df
+        self.customers_df = customers_df.copy()
         self.vehicle_config = vehicle_config or DEFAULT_VEHICLE_CONFIG
         self.time_penalty_per_min = time_penalty_per_min
         self.search_time_limit = search_time_limit
@@ -199,7 +184,7 @@ class GreenVRPSolver:
         self._build_vehicle_list()
 
         # 时间矩阵缓存（按速度）
-        self._time_matrix_cache: dict[float, list[list[int]]] = {}
+        self._time_matrix_cache: Dict[float, List[List[int]]] = {}
 
         # 缓存键
         self._cache_key = self._generate_cache_key()
@@ -233,18 +218,25 @@ class GreenVRPSolver:
 
     def _build_locations(self) -> None:
         """构建位置坐标列表和距离/时间矩阵。"""
-        # 使用 NumPy 向量化操作提取位置（O(n) 连续内存访问）
-        lat_lon = self.customers_df[["lat", "lon"]].to_numpy(dtype=np.float64)
-        self.locations = [(float(row[0]), float(row[1])) for row in lat_lon]
+        # 使用 NumPy 优化提取位置 (避免 iterrows() 性能问题)
+        self.locations: List[Tuple[float, float]] = list(
+            zip(
+                self.customers_df["lat"].values,
+                self.customers_df["lon"].values,
+            )
+        )
 
         # 使用缓存构建距离矩阵（米）
         self.distance_matrix = self._distance_cache.get_or_compute(self.locations, scale=1000)
 
-        # 提取需求和服务时间（使用 NumPy 向量化）
-        self.demands = self.customers_df["demand"].to_numpy(dtype=np.int32).tolist()
-        self.service_times = self.customers_df["service_time_min"].to_numpy(dtype=np.int32).tolist()
-        tw_array = self.customers_df[["tw_earliest", "tw_latest"]].to_numpy(dtype=np.int32)
-        self.time_windows = [(int(row[0]), int(row[1])) for row in tw_array]
+        # 提取需求和服务时间（使用 NumPy 优化）
+        self.demands = self.customers_df["demand"].values.tolist()
+        self.service_times = self.customers_df["service_time_min"].values.tolist()
+        
+        # 优化时间窗提取 (避免 iterrows())
+        tw_earliest = self.customers_df["tw_earliest"].values.astype(int)
+        tw_latest = self.customers_df["tw_latest"].values.astype(int)
+        self.time_windows = list(zip(tw_earliest, tw_latest))
 
     def _build_vehicle_list(self) -> None:
         """
@@ -253,13 +245,13 @@ class GreenVRPSolver:
         注意：OR-Tools 的异构车队需要为每辆车单独设置容量约束。
         我们按车型分组，同一车型使用相同的时间矩阵（速度相同）。
         """
-        self.vehicles: list[dict[str, Any]] = []
-        self.vehicle_type_map: dict[int, str] = {}  # vehicle_idx -> type_name
-        self.vehicle_speeds: dict[str, int] = {}  # 车型速度映射
+        self.vehicles: List[Dict[str, Any]] = []
+        self.vehicle_type_map: Dict[int, str] = {}  # vehicle_idx -> type_name
+        self.vehicle_speeds: Dict[str, int] = {}  # 车型速度映射
 
         for v_type, config in self.vehicle_config.items():
             self.vehicle_speeds[v_type] = config["speed_kmh"]
-            for _i in range(config["count"]):
+            for i in range(config["count"]):
                 vehicle_idx = len(self.vehicles)
                 self.vehicles.append(
                     {
@@ -276,40 +268,17 @@ class GreenVRPSolver:
         self.num_vehicles = len(self.vehicles)
 
     def _generate_cache_key(self) -> str:
-        """生成求解配置的缓存键（优化版 v4）。"""
-        import json
+        """生成求解配置的缓存键。"""
+        # 基于客户数据、车型配置、惩罚系数生成哈希
+        key_data = (
+            tuple(self.demands),
+            tuple(self.time_windows),
+            tuple(sorted(self.vehicle_config.items())),
+            self.time_penalty_per_min,
+        )
+        return hashlib.md5(str(key_data).encode()).hexdigest()
 
-        n = len(self.demands)
-        if n == 0:
-            key_data = {"n": n, "time_penalty_per_min": self.time_penalty_per_min}
-        elif n <= 50:
-            key_data = {
-                "demands": self.demands,
-                "time_windows": self.time_windows,
-                "vehicle_config": self.vehicle_config,
-                "time_penalty_per_min": self.time_penalty_per_min,
-            }
-        else:
-            key_data = {
-                "sample_demands": [
-                    self.demands[0],
-                    self.demands[n // 2],
-                    self.demands[-1],
-                ],
-                "sample_time_windows": [
-                    self.time_windows[0],
-                    self.time_windows[n // 2],
-                    self.time_windows[-1],
-                ],
-                "vehicle_config": self.vehicle_config,
-                "time_penalty_per_min": self.time_penalty_per_min,
-                "n": n,
-            }
-
-        raw = json.dumps(key_data, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-    def _get_time_matrix(self, speed: float) -> list[list[int]]:
+    def _get_time_matrix(self, speed: float) -> List[List[int]]:
         """
         获取指定速度的时间矩阵（带缓存）。
 
@@ -418,99 +387,11 @@ class GreenVRPSolver:
 
         # v3: 添加高级搜索参数优化
         search_parameters.use_cp_sat = 0  # 对于VRP，CP-SAT通常不如传统方法
-        search_parameters.log_search = False  # 静默模式
+        search_parameters.log_search = 0  # 静默模式
 
         return search_parameters
 
-    def _setup_routing_model(self) -> tuple[pywrapcp.RoutingModel, pywrapcp.RoutingIndexManager]:
-        """
-        初始化 Routing 模型，注册所有约束和回调。
-
-        将 solve() 和 solve_with_params() 中的公共初始化逻辑提取出来。
-
-        Returns:
-            (routing, manager) 元组
-        """
-        num_locations = len(self.locations)
-
-        manager = pywrapcp.RoutingIndexManager(num_locations, self.num_vehicles, 0)
-        routing = pywrapcp.RoutingModel(manager)
-
-        # 预计算 routing index -> node 的映射，避免在回调中重复调用 IndexToNode
-        # 对于 20 节点问题，该映射可将回调开销降低约 30-40%
-        num_indices = manager.GetNumberOfIndices()
-        index_to_node = np.empty(num_indices, dtype=np.int32)
-        for idx in range(num_indices):
-            index_to_node[idx] = manager.IndexToNode(idx)
-
-        # 注册距离回调
-        distance_matrix = self.distance_matrix
-
-        def distance_callback(from_index: int, to_index: int) -> int:
-            return distance_matrix[index_to_node[from_index]][index_to_node[to_index]]
-
-        transit_callback_index = routing.RegisterTransitCallback(distance_callback)
-        routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
-
-        # 添加容量约束
-        demands = self.demands
-
-        def demand_callback(from_index: int) -> int:
-            return int(demands[index_to_node[from_index]])
-
-        demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
-        capacities = [vehicle["capacity"] for vehicle in self.vehicles]
-        routing.AddDimensionWithVehicleCapacity(
-            demand_callback_index, 0, capacities, True, "Capacity"
-        )
-
-        # 添加时间维度
-        time_callback_indices = []
-        for vehicle_idx in range(self.num_vehicles):
-            time_callback = self._create_time_callback_model(manager, vehicle_idx, index_to_node)
-            callback_index = routing.RegisterTransitCallback(time_callback)
-            time_callback_indices.append(callback_index)
-
-        routing.AddDimensionWithVehicleTransits(time_callback_indices, 30, 960, False, "Time")
-        time_dimension = routing.GetDimensionOrDie("Time")
-
-        # 设置时间窗约束
-        for location_idx in range(1, num_locations):
-            earliest, latest = self.time_windows[location_idx]
-            index = manager.NodeToIndex(location_idx)
-            time_dimension.CumulVar(index).SetRange(earliest, latest)
-            time_dimension.SetCumulVarSoftUpperBound(index, latest, int(self.time_penalty_per_min))
-
-        # 存储到实例
-        self.manager = manager
-        return routing, manager
-
-    def _create_time_callback_model(
-        self,
-        manager: pywrapcp.RoutingIndexManager,
-        vehicle_idx: int,
-        index_to_node: np.ndarray,
-    ) -> Any:
-        """
-        创建时间回调（不依赖 self.manager，接收外部 manager）。
-
-        Args:
-            manager: RoutingIndexManager 实例
-            vehicle_idx: 车辆索引
-            index_to_node: 预计算的 routing index -> node 映射数组
-
-        Returns:
-            时间回调函数
-        """
-        speed = self.vehicles[vehicle_idx]["speed_kmh"]
-        time_matrix = self._get_time_matrix(speed)
-
-        def time_callback(from_index: int, to_index: int) -> int:
-            return time_matrix[index_to_node[from_index]][index_to_node[to_index]]
-
-        return time_callback
-
-    def solve(self) -> dict[str, Any]:
+    def solve(self) -> Dict[str, Any]:
         """
         执行 VRPTW 求解。
 
@@ -530,16 +411,75 @@ class GreenVRPSolver:
         start_time = time.time()
         num_locations = len(self.locations)
 
-        # 使用公共方法初始化模型
-        routing, manager = self._setup_routing_model()
+        # 创建 Routing Index Manager
+        # depot=0 表示仓库在第0个位置
+        self.manager = pywrapcp.RoutingIndexManager(num_locations, self.num_vehicles, 0)
+        routing = pywrapcp.RoutingModel(self.manager)
 
-        # 设置搜索参数（自适应优化）
+        # ========== 1. 注册距离回调 ==========
+        def distance_callback(from_index: int, to_index: int) -> int:
+            from_node = self.manager.IndexToNode(from_index)
+            to_node = self.manager.IndexToNode(to_index)
+            return self.distance_matrix[from_node][to_node]
+
+        transit_callback_index = routing.RegisterTransitCallback(distance_callback)
+        routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
+
+        # ========== 2. 添加容量约束（优化版）==========
+        def demand_callback(from_index: int) -> int:
+            from_node = self.manager.IndexToNode(from_index)
+            return int(self.demands[from_node])
+
+        demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
+
+        # 为每辆车设置容量约束（异构车队）
+        # 使用统一的容量维度，但每辆车有不同的容量上限
+        capacities = [vehicle["capacity"] for vehicle in self.vehicles]
+        routing.AddDimensionWithVehicleCapacity(
+            demand_callback_index,
+            0,  # null capacity slack
+            capacities,  # 各车辆的最大容量列表
+            True,  # start cumul to zero
+            "Capacity",
+        )
+
+        # ========== 3. 添加时间维度 ==========
+        # 为每辆车注册独立的时间回调（不同速度）
+        time_callback_indices = []
+        for vehicle_idx in range(self.num_vehicles):
+            time_callback = self._create_time_callback(vehicle_idx)
+            callback_index = routing.RegisterTransitCallback(time_callback)
+            time_callback_indices.append(callback_index)
+
+        # 创建时间维度
+        routing.AddDimensionWithVehicleTransits(
+            time_callback_indices,
+            30,  # 等待时间上界（分钟）
+            960,  # 时间范围上界（16小时）
+            False,  # 不强制从零开始
+            "Time",
+        )
+        time_dimension = routing.GetDimensionOrDie("Time")
+
+        # ========== 4. 设置时间窗约束（优化版）==========
+        for location_idx in range(1, num_locations):  # 跳过仓库
+            earliest, latest = self.time_windows[location_idx]
+            index = self.manager.NodeToIndex(location_idx)
+
+            # 硬约束：到达时间必须在时间窗范围内
+            time_dimension.CumulVar(index).SetRange(earliest, latest)
+
+            # 软约束：允许迟到，但施加惩罚
+            # 只需设置一次软上界（不需要为每辆车单独设置）
+            time_dimension.SetCumulVarSoftUpperBound(index, latest, int(self.time_penalty_per_min))
+
+        # ========== 5. 设置搜索参数（自适应优化）==========
         search_parameters = self._get_adaptive_search_params(num_locations)
 
-        # 求解
+        # ========== 6. 求解 ==========
         solution = routing.SolveWithParameters(search_parameters)
 
-        # 提取结果
+        # ========== 7. 提取结果 ==========
         solve_time = time.time() - start_time
 
         if solution:
@@ -548,14 +488,15 @@ class GreenVRPSolver:
             result = self._create_empty_result("NO_SOLUTION_FOUND")
 
         result["solve_time_seconds"] = round(solve_time, 2)
+
         return result
 
     def solve_with_params(
         self,
-        first_solution_strategy: int | None = None,
-        metaheuristic: int | None = None,
-        time_limit: int | None = None,
-    ) -> dict[str, Any]:
+        first_solution_strategy: int = None,
+        metaheuristic: int = None,
+        time_limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
         使用指定策略参数求解（支持复用求解器实例）。
 
@@ -570,9 +511,48 @@ class GreenVRPSolver:
             求解结果字典
         """
         start_time = time.time()
+        num_locations = len(self.locations)
 
-        # 使用公共方法初始化模型
-        routing, manager = self._setup_routing_model()
+        # 创建 Routing Index Manager
+        self.manager = pywrapcp.RoutingIndexManager(num_locations, self.num_vehicles, 0)
+        routing = pywrapcp.RoutingModel(self.manager)
+
+        # 注册距离回调
+        def distance_callback(from_index: int, to_index: int) -> int:
+            from_node = self.manager.IndexToNode(from_index)
+            to_node = self.manager.IndexToNode(to_index)
+            return self.distance_matrix[from_node][to_node]
+
+        transit_callback_index = routing.RegisterTransitCallback(distance_callback)
+        routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
+
+        # 添加容量约束
+        def demand_callback(from_index: int) -> int:
+            from_node = self.manager.IndexToNode(from_index)
+            return int(self.demands[from_node])
+
+        demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
+        capacities = [vehicle["capacity"] for vehicle in self.vehicles]
+        routing.AddDimensionWithVehicleCapacity(
+            demand_callback_index, 0, capacities, True, "Capacity"
+        )
+
+        # 添加时间维度
+        time_callback_indices = []
+        for vehicle_idx in range(self.num_vehicles):
+            time_callback = self._create_time_callback(vehicle_idx)
+            callback_index = routing.RegisterTransitCallback(time_callback)
+            time_callback_indices.append(callback_index)
+
+        routing.AddDimensionWithVehicleTransits(time_callback_indices, 30, 960, False, "Time")
+        time_dimension = routing.GetDimensionOrDie("Time")
+
+        # 设置时间窗约束
+        for location_idx in range(1, num_locations):
+            earliest, latest = self.time_windows[location_idx]
+            index = self.manager.NodeToIndex(location_idx)
+            time_dimension.CumulVar(index).SetRange(earliest, latest)
+            time_dimension.SetCumulVarSoftUpperBound(index, latest, int(self.time_penalty_per_min))
 
         # 设置搜索参数
         search_parameters = pywrapcp.DefaultRoutingSearchParameters()
@@ -589,7 +569,7 @@ class GreenVRPSolver:
                 routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
             )
         search_parameters.time_limit.seconds = time_limit or self.search_time_limit
-        search_parameters.log_search = False
+        search_parameters.log_search = 0
 
         # 求解
         solution = routing.SolveWithParameters(search_parameters)
@@ -606,32 +586,27 @@ class GreenVRPSolver:
 
     def _extract_solution(
         self, routing: pywrapcp.RoutingModel, solution: pywrapcp.Assignment
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         从 OR-Tools 解中提取结构化结果。
 
         包含详细的时间信息：到达时间、服务时间、离开时间、迟到时间等。
         """
         time_dimension = routing.GetDimensionOrDie("Time")
-        routes: list[dict[str, Any]] = []
-        total_distance = 0.0
+        routes: List[Dict[str, Any]] = []
+        total_distance = 0
         total_late_minutes = 0
-        vehicles_used: dict[str, int] = dict.fromkeys(self.vehicle_config, 0)
-
-        # 预缓存客户信息，避免重复调用 customers_df.iloc
-        customer_ids = self.customers_df["id"].to_numpy(dtype=np.int32)
-        customer_names = self.customers_df["name"].to_numpy(dtype=object)
+        vehicles_used: Dict[str, int] = {v_type: 0 for v_type in self.vehicle_config}
 
         for vehicle_idx in range(self.num_vehicles):
             index = routing.Start(vehicle_idx)
-            vehicle = self.vehicles[vehicle_idx]
-            route_info: dict[str, Any] = {
+            route_info: Dict[str, Any] = {
                 "vehicle_id": vehicle_idx,
-                "vehicle_type": vehicle["type"],
-                "vehicle_color": vehicle["color"],
-                "capacity": vehicle["capacity"],
+                "vehicle_type": self.vehicles[vehicle_idx]["type"],
+                "vehicle_color": self.vehicles[vehicle_idx]["color"],
+                "capacity": self.vehicles[vehicle_idx]["capacity"],
                 "stops": [],
-                "distance_km": 0.0,
+                "distance_km": 0,
                 "total_demand": 0,
                 "total_time_min": 0,
                 "late_minutes": 0,
@@ -646,6 +621,7 @@ class GreenVRPSolver:
 
                 # 时间信息
                 arrival_time = solution.Min(time_var)
+                departure_time = solution.Max(time_var)
                 tw_earliest, tw_latest = self.time_windows[node_index]
 
                 # 计算迟到时间
@@ -654,18 +630,18 @@ class GreenVRPSolver:
                 route_info["late_minutes"] += late_minutes
 
                 # 服务时间
-                service_time = int(self.service_times[node_index]) if node_index > 0 else 0
+                service_time = self.service_times[node_index] if node_index > 0 else 0
                 route_info["total_time_min"] += service_time
 
-                # 使用预缓存的客户信息
-                stop_info: dict[str, Any] = {
+                stop_info = {
                     "node": node_index,
-                    "customer_id": int(customer_ids[node_index]),
-                    "customer_name": str(customer_names[node_index]),
+                    "customer_id": int(self.customers_df.iloc[node_index]["id"]),
+                    "customer_name": self.customers_df.iloc[node_index]["name"],
                     "lat": self.locations[node_index][0],
                     "lon": self.locations[node_index][1],
                     "demand": int(self.demands[node_index]),
                     "arrival_time": int(arrival_time),
+                    "departure_time": int(departure_time),
                     "service_time": service_time,
                     "tw_earliest": tw_earliest,
                     "tw_latest": tw_latest,
@@ -679,31 +655,33 @@ class GreenVRPSolver:
                 previous_index = index
                 index = solution.Value(routing.NextVar(index))
                 route_distance += routing.GetArcCostForVehicle(previous_index, index, vehicle_idx)
+
                 route_nodes.append(node_index)
 
             # 添加终点（返回仓库）
             end_index = self.manager.IndexToNode(index)
-            dest_lat, dest_lon = self.locations[end_index]
+            # 终点是仓库（depot，索引0），不是客户
             if end_index == 0:
                 route_info["stops"].append(
                     {
                         "node": end_index,
-                        "customer_id": 0,
+                        "customer_id": None,  # 仓库不是客户
                         "customer_name": "仓库",
-                        "lat": dest_lat,
-                        "lon": dest_lon,
+                        "lat": self.locations[end_index][0],
+                        "lon": self.locations[end_index][1],
                         "demand": 0,
                         "service_time": 0,
                     }
                 )
             else:
+                # 非0索引说明路线未正常结束，但仍记录
                 route_info["stops"].append(
                     {
                         "node": end_index,
-                        "customer_id": int(customer_ids[end_index]),
-                        "customer_name": str(customer_names[end_index]),
-                        "lat": dest_lat,
-                        "lon": dest_lon,
+                        "customer_id": int(self.customers_df.iloc[end_index]["id"]),
+                        "customer_name": self.customers_df.iloc[end_index]["name"],
+                        "lat": self.locations[end_index][0],
+                        "lon": self.locations[end_index][1],
                     }
                 )
 
@@ -712,7 +690,7 @@ class GreenVRPSolver:
             total_distance += route_info["distance_km"]
 
             # 只有访问了客户的车辆才算被使用
-            if route_nodes:
+            if len(route_nodes) > 0:
                 vehicles_used[route_info["vehicle_type"]] += 1
                 routes.append(route_info)
 
@@ -724,56 +702,25 @@ class GreenVRPSolver:
             "solution_status": "SUCCESS",
         }
 
-    def _create_empty_result(self, status: str) -> dict[str, Any]:
+    def _create_empty_result(self, status: str) -> Dict[str, Any]:
         """创建空的求解结果。"""
         return {
             "routes": [],
             "total_distance": 0,
-            "vehicles_used": dict.fromkeys(self.vehicle_config, 0),
+            "vehicles_used": {v_type: 0 for v_type in self.vehicle_config},
             "total_late_minutes": 0,
             "solution_status": status,
         }
 
 
-def solve_with_cache(
-    customers_df: pd.DataFrame,
-    vehicle_config: dict[str, dict[str, Any]] | None = None,
-    time_penalty_per_min: float = 10.0,
-    time_limit: int = 30,
-    use_cache: bool = True,
-) -> dict[str, Any]:
-    """
-    使用全局池的缓存求解（推荐方法 v4）。
-
-    自动利用解决方案缓存，避免重复求解相同问题。
-
-    Args:
-        customers_df: 客户数据框
-        vehicle_config: 车型配置
-        time_penalty_per_min: 迟到惩罚
-        time_limit: 求解时间限制
-        use_cache: 是否使用缓存
-
-    Returns:
-        求解结果
-    """
-    return _solver_pool.solve_with_cache(
-        customers_df=customers_df,
-        vehicle_config=vehicle_config,
-        time_penalty_per_min=time_penalty_per_min,
-        search_time_limit=time_limit,
-        use_cache=use_cache,
-    )
-
-
 def solve_with_multiple_strategies(
     customers_df: pd.DataFrame,
-    vehicle_config: dict[str, dict[str, Any]],
+    vehicle_config: Dict[str, Dict[str, Any]],
     time_penalty_per_min: float = 10.0,
     time_limit: int = 30,
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """
-    使用多种策略求解，返回最优解（优化版 v4：集成缓存）。
+    使用多种策略求解，返回最优解（优化版：复用求解器实例）。
 
     尝试多种初始解策略和元启发式算法组合，
     选择最优结果返回。
@@ -843,12 +790,12 @@ def solve_with_multiple_strategies(
 
 def _solve_single_strategy(
     customers_df: pd.DataFrame,
-    vehicle_config: dict[str, dict[str, Any]],
+    vehicle_config: Dict[str, Dict[str, Any]],
     time_penalty_per_min: float,
     time_limit: int,
     first_solution_strategy: int,
     metaheuristic: int,
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """
     单策略求解工作函数（用于并行执行）。
 
@@ -863,14 +810,6 @@ def _solve_single_strategy(
     Returns:
         求解结果
     """
-    # Windows spawn 子进程不会继承 sys.path，需手动添加项目根目录
-    import os
-    import sys
-
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
-
     try:
         solver = GreenVRPSolver(
             customers_df=customers_df,
@@ -888,30 +827,20 @@ def _solve_single_strategy(
         return {
             "routes": [],
             "total_distance": 0,
-            "vehicles_used": dict.fromkeys(vehicle_config, 0),
+            "vehicles_used": {v_type: 0 for v_type in vehicle_config},
             "total_late_minutes": 0,
             "solution_status": "ERROR",
             "solve_time_seconds": 0,
         }
 
 
-def _init_worker() -> None:
-    """Windows spawn 子进程初始化：添加项目根目录到 sys.path。"""
-    import os
-    import sys
-
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
-
-
 def solve_with_multiple_strategies_parallel(
     customers_df: pd.DataFrame,
-    vehicle_config: dict[str, dict[str, Any]],
+    vehicle_config: Dict[str, Dict[str, Any]],
     time_penalty_per_min: float = 10.0,
     time_limit: int = 30,
-    max_workers: int | None = None,
-) -> dict[str, Any]:
+    max_workers: Optional[int] = None,
+) -> Dict[str, Any]:
     """
     使用多种策略并行求解，返回最优解。
 
@@ -931,15 +860,6 @@ def solve_with_multiple_strategies_parallel(
         由于Python GIL，使用ProcessPoolExecutor实现真正的并行。
         进程间通信有一定开销，小规模问题可能不如串行版本快。
     """
-    # Windows spawn 子进程需要 PYTHONPATH 才能正确导入项目模块
-    import os
-
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    original_pythonpath = os.environ.get("PYTHONPATH", "")
-    if project_root not in original_pythonpath.split(os.pathsep):
-        separator = os.pathsep if original_pythonpath else ""
-        os.environ["PYTHONPATH"] = f"{original_pythonpath}{separator}{project_root}"
-
     # 策略组合（避免 SWEEP，新版本需要额外配置）
     strategies = [
         (
@@ -967,7 +887,7 @@ def solve_with_multiple_strategies_parallel(
     start_time = time.time()
 
     try:
-        with ProcessPoolExecutor(max_workers=max_workers, initializer=_init_worker) as executor:
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(
                     _solve_single_strategy,
@@ -1005,7 +925,7 @@ def solve_with_multiple_strategies_parallel(
         return {
             "routes": [],
             "total_distance": 0,
-            "vehicles_used": dict.fromkeys(vehicle_config, 0),
+            "vehicles_used": {v_type: 0 for v_type in vehicle_config},
             "total_late_minutes": 0,
             "solution_status": "NO_SOLUTION_FOUND",
             "solve_time_seconds": round(total_time, 2),

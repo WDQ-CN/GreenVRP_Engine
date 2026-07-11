@@ -5,6 +5,7 @@
 """
 
 import math
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -51,11 +52,11 @@ def haversine_distance(
 
 
 def haversine_distance_vectorized(
-    lat1: float | np.ndarray,
-    lon1: float | np.ndarray,
-    lat2: float | np.ndarray,
-    lon2: float | np.ndarray,
-) -> float | np.ndarray:
+    lat1: Union[float, np.ndarray],
+    lon1: Union[float, np.ndarray],
+    lat2: Union[float, np.ndarray],
+    lon2: Union[float, np.ndarray],
+) -> Union[float, np.ndarray]:
     """
     向量化版本的 Haversine 距离计算。
 
@@ -137,7 +138,7 @@ def destination_point(
     lon: float,
     bearing: float,
     distance_km: float,
-) -> tuple[float, float]:
+) -> Tuple[float, float]:
     """
     从起点沿指定航向移动指定距离后的终点坐标。
 
@@ -196,7 +197,7 @@ def point_in_circle(
 def point_in_polygon(
     point_lat: float,
     point_lon: float,
-    polygon: list[tuple[float, float]],
+    polygon: List[Tuple[float, float]],
 ) -> bool:
     """
     使用射线法判断点是否在多边形区域内。
@@ -221,12 +222,11 @@ def point_in_polygon(
         lat_j, lon_j = polygon[j]
 
         # 避免除零错误：跳过水平边
-        if (
-            lat_i != lat_j
-            and ((lat_i > point_lat) != (lat_j > point_lat))
-            and (point_lon < (lon_j - lon_i) * (point_lat - lat_i) / (lat_j - lat_i) + lon_i)
-        ):
-            inside = not inside
+        if lat_i != lat_j:
+            if ((lat_i > point_lat) != (lat_j > point_lat)) and (
+                point_lon < (lon_j - lon_i) * (point_lat - lat_i) / (lat_j - lat_i) + lon_i
+            ):
+                inside = not inside
 
         j = i
 
@@ -234,8 +234,8 @@ def point_in_polygon(
 
 
 def build_distance_matrix(
-    lats: list[float],
-    lons: list[float],
+    lats: List[float],
+    lons: List[float],
 ) -> np.ndarray:
     """
     构建距离矩阵。

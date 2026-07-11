@@ -42,9 +42,8 @@ python -m venv .venv
 # source .venv/bin/activate  # Linux/macOS
 
 # 安装依赖
-pip install -e .
-pip install -r requirements-test.txt
-# 安装测试依赖（可选）
+pip install -r requirements.txt
+pip install -r requirements-test.txt  # 安装测试依赖（可选）
 ```
 
 `.venv` 目录已排除版本控制，建议为每个环境创建独立虚拟环境。
@@ -158,10 +157,11 @@ green_vrp_engine/
 │   ├── config.py           # 前端配置
 │   └── components/        # UI 组件
 │
-├── start.py                 # 统一启动器（web / api / solve）
-├── web_app.py               # Streamlit Web 应用
+├── start_fast.py           # 高性能启动器
+├── web_app.py              # Streamlit Web 应用
 ├── start_enterprise_ui.py   # 企业 UI 启动器
-├── pyproject.toml           # 项目配置与依赖
+├── start_optimized.py      # 优化版启动器
+├── requirements.txt         # 运行依赖
 └── requirements-test.txt    # 测试依赖
 ```
 
@@ -174,7 +174,7 @@ green_vrp_engine/
 ```python
 from optimization.carbon_aware import CarbonAwareOptimizer
 
-optimizer = CarbonAwareOptimizer(solver_service, customers, vehicle_config, params)
+optimizer = CarbonAwareOptimizer(solver_func, customers, vehicle_config, params)
 
 # 加权法：将碳排放作为优化目标之一
 result = optimizer.optimize_for_carbon(method="weighted")
@@ -345,9 +345,9 @@ report = evaluator.generate_evaluation_report(result)
 
 **命令行启动：**
 ```bash
-# 使用统一启动器
-python start.py api
-python start.py api --port 8001  # 指定端口
+# 使用高性能启动器
+python start_fast.py api
+python start_fast.py api --port 8001  # 指定端口
 
 # 直接启动
 uvicorn api.main:app --reload --port 8000
@@ -515,14 +515,16 @@ pytest --cov=. --cov-report=html --cov-report=term
 
 **方式二：命令行启动**
 ```bash
-# 使用统一启动器（推荐）
-python start.py              # 交互式选择
-python start.py web          # 启动标准 Web 界面
-python start.py api          # 启动 API 服务
-python start.py solve -i data.csv -o result.json  # 命令行求解
+# 使用高性能启动器（推荐）
+python start_fast.py              # 交互式选择
+python start_fast.py web          # 启动标准 Web 界面
+python start_fast.py api          # 启动 API 服务
 
 # 使用企业简约风格前端
 python start_enterprise_ui.py
+
+# 使用标准启动器
+python start.py                    web  # 交互式选择
 ```
 
 **方式三：直接运行**

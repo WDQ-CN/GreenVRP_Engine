@@ -5,12 +5,12 @@
 进行局部重优化以减少计算开销。
 """
 
-import copy
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 from utils.geo import haversine_distance
@@ -45,10 +45,10 @@ class DynamicEvent:
     timestamp: float
     """事件时间戳"""
 
-    data: dict[str, Any]
+    data: Dict[str, Any]
     """事件数据"""
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
         return {
             "event_type": self.event_type.value,
@@ -57,7 +57,7 @@ class DynamicEvent:
         }
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "DynamicEvent":
+    def from_dict(cls, d: Dict[str, Any]) -> "DynamicEvent":
         """从字典创建。"""
         return cls(
             event_type=EventType(d["event_type"]),
@@ -73,13 +73,13 @@ class ReoptimizationResult:
     success: bool
     """是否成功"""
 
-    old_solution: dict[str, Any]
+    old_solution: Dict[str, Any]
     """原解"""
 
-    new_solution: dict[str, Any]
+    new_solution: Dict[str, Any]
     """新解"""
 
-    changes: list[dict[str, Any]]
+    changes: List[Dict[str, Any]]
     """变更列表"""
 
     cost_delta: float
@@ -88,13 +88,13 @@ class ReoptimizationResult:
     reoptimization_time: float
     """重优化耗时"""
 
-    affected_routes: list[int]
+    affected_routes: List[int]
     """受影响的路线"""
 
     message: str = ""
     """消息"""
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
         return {
             "success": self.success,
@@ -112,9 +112,9 @@ class DynamicReoptimizer:
     def __init__(
         self,
         solver_func,
-        customers: list[dict[str, Any]],
-        vehicle_config: dict[str, dict[str, Any]],
-        params: dict[str, float],
+        customers: List[Dict[str, Any]],
+        vehicle_config: Dict[str, Dict[str, Any]],
+        params: Dict[str, float],
     ):
         """
         初始化动态重优化器。
@@ -141,7 +141,7 @@ class DynamicReoptimizer:
 
     def set_current_solution(
         self,
-        solution: dict[str, Any],
+        solution: Dict[str, Any],
     ) -> None:
         """
         设置当前解。
@@ -153,7 +153,7 @@ class DynamicReoptimizer:
 
     def set_vehicle_positions(
         self,
-        positions: dict[int, tuple[float, float]],
+        positions: Dict[int, Tuple[float, float]],
     ) -> None:
         """
         设置车辆当前位置。
@@ -166,7 +166,7 @@ class DynamicReoptimizer:
     def handle_event(
         self,
         event: DynamicEvent,
-        current_solution: dict[str, Any] | None = None,
+        current_solution: Optional[Dict[str, Any]] = None,
         full_reoptimize: bool = False,
     ) -> ReoptimizationResult:
         """
@@ -383,7 +383,7 @@ class DynamicReoptimizer:
 
     def _insert_customer(
         self,
-        new_customer: dict[str, Any],
+        new_customer: Dict[str, Any],
     ) -> ReoptimizationResult:
         """
         使用最小成本插入启发式插入新客户。
@@ -581,8 +581,8 @@ class DynamicReoptimizer:
 
     def _find_affected_routes(
         self,
-        segment: tuple[int, int],
-    ) -> list[int]:
+        segment: Tuple[int, int],
+    ) -> List[int]:
         """
         找到包含指定路段的路线。
         """
@@ -604,7 +604,7 @@ class DynamicReoptimizer:
     def _find_route_by_vehicle(
         self,
         vehicle_id: int,
-    ) -> dict[str, Any] | None:
+    ) -> Optional[Dict[str, Any]]:
         """
         找到指定车辆对应的路线。
         """
@@ -615,13 +615,15 @@ class DynamicReoptimizer:
 
     def _adjust_for_delay(
         self,
-        affected_routes: list[int],
+        affected_routes: List[int],
         delay_minutes: int,
     ) -> ReoptimizationResult:
         """
         为延误调整时间窗。
         """
-        new_solution = copy.deepcopy(self.current_solution)
+        # 使用浅拷贝替代 deepcopy，只复制需要的层级
+        import json
+        new_solution = json.loads(json.dumps(self.current_solution))
         changes = []
 
         for route_idx in affected_routes:
@@ -655,12 +657,14 @@ class DynamicReoptimizer:
         self,
         route_idx: int,
         insert_pos: int,
-        new_customer: dict[str, Any],
-    ) -> dict[str, Any]:
+        new_customer: Dict[str, Any],
+    ) -> Dict[str, Any]:
         """
         执行客户插入操作。
         """
-        new_solution = copy.deepcopy(self.current_solution)
+        # 使用 JSON 序列化替代 deepcopy，性能更好
+        import json
+        new_solution = json.loads(json.dumps(self.current_solution))
         route = new_solution["routes"][route_idx]
 
         # 先获取ID，再递增，避免跳过一个ID

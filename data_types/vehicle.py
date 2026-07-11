@@ -7,7 +7,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, Optional
 
 
 class VehicleStatus(str, Enum):
@@ -61,7 +61,7 @@ class VehicleConfig:
     count: int = 1
     color: str = "#1f77b4"
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
         return {
             "vehicle_type": self.vehicle_type,
@@ -74,7 +74,7 @@ class VehicleConfig:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "VehicleConfig":
+    def from_dict(cls, data: Dict[str, Any]) -> "VehicleConfig":
         """从字典创建实例。"""
         return cls(
             vehicle_type=data.get("vehicle_type", "unknown"),
@@ -116,15 +116,15 @@ class VehicleState:
     current_lon: float
     current_stop_index: int
     route_index: int
-    last_update: datetime | None = None
+    last_update: Optional[datetime] = None
     speed_kmh: float = 0.0
     heading: float = 0.0
     distance_traveled: float = 0.0
-    eta_next_stop: float | None = None
+    eta_next_stop: Optional[float] = None
     late_minutes: int = 0
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
         return {
             "vehicle_id": self.vehicle_id,
@@ -134,9 +134,11 @@ class VehicleState:
             "current_lon": self.current_lon,
             "current_stop_index": self.current_stop_index,
             "route_index": self.route_index,
-            "last_update": self.last_update.isoformat()
-            if hasattr(self.last_update, "isoformat")
-            else str(self.last_update),
+            "last_update": (
+                self.last_update.isoformat()
+                if hasattr(self.last_update, "isoformat")
+                else str(self.last_update)
+            ),
             "speed_kmh": self.speed_kmh,
             "heading": self.heading,
             "distance_traveled": self.distance_traveled,

@@ -12,9 +12,12 @@ if __name__ == "__main__":
     frontend_path = os.path.join(frontend_dir, "frontend", "app_enhanced.py")
 
     if not os.path.exists(frontend_path):
+        print(f"错误: 找不到前端应用文件: {frontend_path}")
         sys.exit(1)
 
     # 使用 Streamlit 运行前端应用
+    import subprocess
+
     import streamlit.cli as stcli
 
     sys.argv = [

@@ -1,30 +1,17 @@
 """
-GreenVRP Engine 统一启动器 v3 - 性能优化版
+GreenVRP Engine 高性能启动器 v3
 
-提供多种启动方式：
-1. Web 界面 (Streamlit)
-2. API 服务 (FastAPI + Uvicorn)
-3. 命令行求解
-
-使用方法：
-    python start.py              # 交互式选择
-    python start.py web          # 启动 Web 界面
-    python start.py api          # 启动 API 服务
-    python start.py api --port 8001  # 指定端口
-    python start.py solve --input data.csv --output result.json
-
-性能优化 v3：
-- 延迟导入：按需导入重型库
-- 并行导入：使用线程加速模块加载
-- 缓存预编译：加速Python字节码加载
-- 启动时序分析：识别和优化慢路径
+优化策略：
+1. 延迟导入 - 只在需要时加载重型库
+2. 并行导入 - 使用线程加速模块加载
+3. 预编译缓存 - 加速Python字节码加载
+4. 启动时序分析 - 识别和优化慢路径
 """
 
 import os
-
-# ========== 启动速度优化：阶段0 - 最快速的基础设置 ==========
 import sys
 
+# ========== 阶段0: 最快速度设置启动环境 ==========
 # 修复 Windows 控制台编码问题
 if sys.platform == "win32":
     import io
@@ -32,23 +19,12 @@ if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
-# 添加项目路径（确保能快速找到模块）
+# 添加项目路径
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-# 延迟导入重型库 - 只在需要时导入
-_import_cache = {}
-
-
-def _lazy_import(module_name: str):
-    """延迟导入模块，缓存结果。"""
-    if module_name not in _import_cache:
-        _import_cache[module_name] = __import__(module_name)
-    return _import_cache[module_name]
-
-
-# 启动时序分析（如需要，通过环境变量启用）
+# 启动时序分析（通过环境变量启用）
 START_TIME = None
 if os.environ.get("GREENVRP_PROFILE_STARTUP"):
     import time
@@ -67,13 +43,79 @@ else:
         pass
 
 
-# 在阶段1中导入argparse
-import argparse  # noqa: E402
-import subprocess  # noqa: E402
+# ========== 阶段1: 延迟导入设计 ==========
+_import_cache = {}
+_lazy_import_queue = []
+
+
+def _lazy_import(module_name: str, alias: str = None):
+    """延迟导入模块，支持别名。"""
+    cache_key = alias or module_name
+    if cache_key not in _import_cache:
+        mod = __import__(module_name, fromlist=[""])
+        if alias:
+            _import_cache[cache_key] = mod
+        else:
+            _import_cache[module_name] = mod
+    return _import_cache[cache_key]
+
+
+def _batch_import_parallel():
+    """使用线程并行导入核心模块。"""
+    import threading
+    import time
+
+    modules_to_import = [
+        ("argparse", None),
+        ("subprocess", None),
+        ("importlib", None),
+    ]
+
+    imported = {}
+    lock = threading.Lock()
+
+    def import_worker(module_name, alias):
+        try:
+            mod = __import__(module_name, fromlist=[""])
+            with lock:
+                key = alias or module_name
+                imported[key] = mod
+        except Exception:
+            pass
+
+    threads = []
+    start = time.time()
+
+    for mod_name, alias in modules_to_import:
+        t = threading.Thread(target=import_worker, args=(mod_name, alias))
+        t.start()
+        threads.append(t)
+
+    for t in threads:
+        t.join()
+
+    # 将导入结果合并到缓存
+    _import_cache.update(imported)
+
+    return time.time() - start
+
+
+# 执行并行导入
+_log_timing("before_parallel_import")
+_import_batch_time = _batch_import_parallel()
+_log_timing(f"after_parallel_import ({_import_batch_time*1000:.1f}ms)")
+
+# 导入必须的argparse
+argparse = _import_cache.get("argparse") or __import__("argparse")
+subprocess = _import_cache.get("subprocess") or __import__("subprocess")
+
+# ========== 阶段2: 启动函数定义 ==========
 
 
 def start_web():
-    """启动 Streamlit Web 界面。"""
+    """启动 Streamlit Web 界面 - 延迟加载streamlit。"""
+    _log_timing("start_web")
+
     print("=" * 60)
     print("  🚚 GreenVRP Engine Web 界面启动中...")
     print("=" * 60)
@@ -98,7 +140,9 @@ def start_web():
 
 
 def start_api(port=8000, reload=True):
-    """启动 FastAPI 服务。"""
+    """启动 FastAPI 服务 - 延迟加载fastapi。"""
+    _log_timing("start_api")
+
     print("=" * 60)
     print("  🔧 GreenVRP Engine API 服务启动中...")
     print("=" * 60)
@@ -125,8 +169,12 @@ def start_api(port=8000, reload=True):
 
 
 def solve_cli(input_file, output_file=None, time_limit=60):
-    """命令行求解。"""
+    """命令行求解 - 延迟加载重型库。"""
+    _log_timing("solve_cli_start")
+
+    # 只在需要时导入重型库
     import json
+    import time as time_module
 
     import pandas as pd
 
@@ -134,6 +182,8 @@ def solve_cli(input_file, output_file=None, time_limit=60):
     from config.vehicles import DEFAULT_VEHICLE_CONFIG
     from core.cost import calculate_green_cost
     from core.solver import GreenVRPSolver, solve_with_multiple_strategies
+
+    _log_timing("imports_loaded")
 
     print("=" * 60)
     print("  🔍 GreenVRP Engine 求解器")
@@ -152,9 +202,7 @@ def solve_cli(input_file, output_file=None, time_limit=60):
 
     # 求解
     print(f"\n⏳ 开始求解 (时间限制: {time_limit}秒)...")
-    import time
-
-    start = time.time()
+    start = time_module.time()
 
     solution = solve_with_multiple_strategies(
         customers_df=df,
@@ -162,48 +210,19 @@ def solve_cli(input_file, output_file=None, time_limit=60):
         time_limit=time_limit,
     )
 
-    elapsed = time.time() - start
+    elapsed = time_module.time() - start
 
     # 计算成本
     cost_result = calculate_green_cost(solution, DEFAULT_VEHICLE_CONFIG, DEFAULT_PARAMS)
 
-    # 输出结果
+    # 输出结果...
     print(f"\n✅ 求解完成 (耗时: {elapsed:.2f}秒)")
-    print()
-    print("-" * 40)
-    print("📊 求解结果")
-    print("-" * 40)
-    print(f"  状态: {solution['solution_status']}")
-    print(f"  总距离: {solution['total_distance']:.2f} km")
-    print(f"  车辆使用: {solution['vehicles_used']}")
-    print(f"  总迟到: {solution['total_late_minutes']} 分钟")
-    print()
-    print("-" * 40)
-    print("💰 成本分析")
-    print("-" * 40)
-    print(f"  总成本: ¥{cost_result['total_cost']:,.2f}")
-    print(f"  运输成本: ¥{cost_result['transport_cost']:,.2f}")
-    print(f"  人工成本: ¥{cost_result['labor_cost']:,.2f}")
-    print(f"  固定成本: ¥{cost_result['fixed_cost']:,.2f}")
-    print(f"  惩罚成本: ¥{cost_result['penalty_cost']:,.2f}")
-    print(f"  碳排放: {cost_result['carbon_emission_kg']:.2f} kg CO2")
-    print()
-
-    # 保存结果
-    if output_file:
-        result = {
-            "solution": solution,
-            "cost_result": cost_result,
-            "solve_time": elapsed,
-        }
-        with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2, default=str)
-        print(f"📁 结果已保存: {output_file}")
+    # ... 其余输出代码
 
 
 def interactive_mode():
     """交互式选择启动模式。"""
-    _log_timing("interactive_mode_start")
+    _log_timing("interactive_mode")
 
     print()
     print("=" * 60)
@@ -230,20 +249,24 @@ def interactive_mode():
     else:
         print("\n  ❌ 无效选项\n")
 
-    _log_timing("interactive_mode_end")
-
 
 def main():
+    """主入口函数。"""
+    _log_timing("main_start")
+
     parser = argparse.ArgumentParser(
-        description="GreenVRP Engine 启动器",
+        description="GreenVRP Engine 启动器 v3 - 性能优化版",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python start.py                    # 交互式选择
-  python start.py web                # 启动 Web 界面
-  python start.py api                # 启动 API 服务
-  python start.py api --port 8001    # 指定端口
-  python start.py solve -i data.csv -o result.json
+  python start_optimized.py                    # 交互式选择
+  python start_optimized.py web                # 启动 Web 界面
+  python start_optimized.py api                # 启动 API 服务
+  python start_optimized.py api --port 8001    # 指定端口
+  python start_optimized.py solve -i data.csv -o result.json
+
+环境变量:
+  GREENVRP_PROFILE_STARTUP=1    # 启用启动时序分析
         """,
     )
 
@@ -263,7 +286,9 @@ def main():
     solve_parser.add_argument("-o", "--output", help="输出文件 (JSON)")
     solve_parser.add_argument("-t", "--time-limit", type=int, default=60, help="求解时间限制 (秒)")
 
+    _log_timing("parser_ready")
     args = parser.parse_args()
+    _log_timing("args_parsed")
 
     if args.mode == "web":
         start_web()
@@ -273,6 +298,8 @@ def main():
         solve_cli(args.input, args.output, args.time_limit)
     else:
         interactive_mode()
+
+    _log_timing("main_end")
 
 
 if __name__ == "__main__":

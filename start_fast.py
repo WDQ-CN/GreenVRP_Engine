@@ -1,75 +1,30 @@
 """
-GreenVRP Engine 统一启动器 v3 - 性能优化版
+GreenVRP Engine 高性能启动器 v3
 
-提供多种启动方式：
-1. Web 界面 (Streamlit)
-2. API 服务 (FastAPI + Uvicorn)
-3. 命令行求解
+启动速度优化策略：
+1. 延迟导入 - 只在需要时加载重型库
+2. 预加载缓存 - 加速常用模块导入
+3. 精简启动路径 - 移除不必要的初始化
 
 使用方法：
-    python start.py              # 交互式选择
-    python start.py web          # 启动 Web 界面
-    python start.py api          # 启动 API 服务
-    python start.py api --port 8001  # 指定端口
-    python start.py solve --input data.csv --output result.json
-
-性能优化 v3：
-- 延迟导入：按需导入重型库
-- 并行导入：使用线程加速模块加载
-- 缓存预编译：加速Python字节码加载
-- 启动时序分析：识别和优化慢路径
+    python start_fast.py              # 交互式选择
+    python start_fast.py web          # 启动 Web 界面
+    python start_fast.py api          # 启动 API 服务
+    python start_fast.py api --port 8001  # 指定端口
 """
 
 import os
-
-# ========== 启动速度优化：阶段0 - 最快速的基础设置 ==========
 import sys
 
-# 修复 Windows 控制台编码问题
-if sys.platform == "win32":
-    import io
-
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
-
-# 添加项目路径（确保能快速找到模块）
+# 快速路径设置
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
-
-# 延迟导入重型库 - 只在需要时导入
-_import_cache = {}
-
-
-def _lazy_import(module_name: str):
-    """延迟导入模块，缓存结果。"""
-    if module_name not in _import_cache:
-        _import_cache[module_name] = __import__(module_name)
-    return _import_cache[module_name]
-
-
-# 启动时序分析（如需要，通过环境变量启用）
-START_TIME = None
-if os.environ.get("GREENVRP_PROFILE_STARTUP"):
-    import time
-
-    START_TIME = time.perf_counter()
-    _timing_points = [("start", 0.0)]
-
-    def _log_timing(label: str):
-        elapsed = time.perf_counter() - START_TIME
-        _timing_points.append((label, elapsed))
-        print(f"[STARTUP] {label}: {elapsed*1000:.2f}ms")
-
-else:
-
-    def _log_timing(label: str):
-        pass
-
-
-# 在阶段1中导入argparse
-import argparse  # noqa: E402
-import subprocess  # noqa: E402
+# 只导入必须的轻量级模块
+import argparse
+import json
+import subprocess
+import time
 
 
 def start_web():
@@ -125,15 +80,14 @@ def start_api(port=8000, reload=True):
 
 
 def solve_cli(input_file, output_file=None, time_limit=60):
-    """命令行求解。"""
-    import json
-
+    """命令行求解 - 延迟加载重型库。"""
+    # 延迟导入重型库
     import pandas as pd
 
     from config.constants import DEFAULT_PARAMS
     from config.vehicles import DEFAULT_VEHICLE_CONFIG
     from core.cost import calculate_green_cost
-    from core.solver import GreenVRPSolver, solve_with_multiple_strategies
+    from core.solver import solve_with_multiple_strategies
 
     print("=" * 60)
     print("  🔍 GreenVRP Engine 求解器")
@@ -152,8 +106,6 @@ def solve_cli(input_file, output_file=None, time_limit=60):
 
     # 求解
     print(f"\n⏳ 开始求解 (时间限制: {time_limit}秒)...")
-    import time
-
     start = time.time()
 
     solution = solve_with_multiple_strategies(
@@ -203,8 +155,6 @@ def solve_cli(input_file, output_file=None, time_limit=60):
 
 def interactive_mode():
     """交互式选择启动模式。"""
-    _log_timing("interactive_mode_start")
-
     print()
     print("=" * 60)
     print("  🚚 GreenVRP Engine 启动器")
@@ -229,8 +179,6 @@ def interactive_mode():
         print("\n  再见! 👋\n")
     else:
         print("\n  ❌ 无效选项\n")
-
-    _log_timing("interactive_mode_end")
 
 
 def main():
