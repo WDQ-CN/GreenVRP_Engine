@@ -20,7 +20,7 @@ Example:
 """
 
 import copy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from utils.geo import haversine_distance, route_distance_km
 from logging_config import get_logger
