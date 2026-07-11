@@ -1,0 +1,48 @@
+{
+  "endpoints": [
+    {
+      "name": "health",
+      "iterations": 50,
+      "errors": 0,
+      "p50_ms": 1.86,
+      "p95_ms": 3.31,
+      "p99_ms": 4.62,
+      "mean_ms": 1.96,
+      "min_ms": 0.91,
+      "max_ms": 4.97
+    },
+    {
+      "name": "create_scenario",
+      "iterations": 20,
+      "errors": 0,
+      "p50_ms": 16.3,
+      "p95_ms": 21.65,
+      "p99_ms": 40.52,
+      "mean_ms": 17.85,
+      "min_ms": 12.92,
+      "max_ms": 45.24
+    },
+    {
+      "name": "list_scenarios",
+      "iterations": 30,
+      "errors": 0,
+      "p50_ms": 2.76,
+      "p95_ms": 3.92,
+      "p99_ms": 15.46,
+      "mean_ms": 3.42,
+      "min_ms": 2.14,
+      "max_ms": 20.06
+    },
+    {
+      "name": "solve_sync",
+      "iterations": 5,
+      "errors": 0,
+      "p50_ms": 5.5,
+      "p95_ms": 4027.02,
+      "p99_ms": 4830.85,
+      "mean_ms": 1011.17,
+      "min_ms": 5.27,
+      "max_ms": 5031.81
+    }
+  ]
+}

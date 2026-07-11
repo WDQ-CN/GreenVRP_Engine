@@ -1,0 +1,61 @@
+# Virtual environment
+.venv/
+.env/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE and editor
+.idea/
+.claude/
+.vscode/
+.sublime-project
+.sublime-workspace
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.tox/
+.coverage
+htmlcov/
+coverage.xml
+junit.xml
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment variables
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.sqlite
+
+# Backup files
+*.bak
+*.tmp
+*.backup
+
+# Web
+.streamlit/

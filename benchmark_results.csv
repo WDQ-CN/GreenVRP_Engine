@@ -1,0 +1,3 @@
+scenario,nodes,total_time,solve_time,distance,late_minutes,vehicles,status
+small_20,20,30.548538400000098,30.548537200000055,254.02,0,7,SUCCESS
+medium_50,50,60.573249799999985,60.57324769999991,387.71,0,7,SUCCESS

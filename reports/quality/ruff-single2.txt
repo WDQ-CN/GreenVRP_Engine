@@ -1,0 +1,39 @@
+I001 [*] Import block is un-sorted or un-formatted
+  --> api\main.py:17:1
+   |
+15 |   """
+16 |
+17 | / from contextlib import asynccontextmanager
+18 | | from fastapi import FastAPI
+19 | | from fastapi.middleware.cors import CORSMiddleware
+20 | | from .routers import solver_router, jobs_router, scenarios_router, health_router
+21 | | from fastapi.responses import JSONResponse
+22 | | from fastapi import Request
+23 | | import os
+24 | | from exceptions.errors import GreenVRPError
+   | |___________________________________________^
+   |
+help: Organize imports
+
+T201 `print` found
+  --> api\main.py:31:5
+   |
+29 |     """应用生命周期管理�?""
+30 |     # 启动时初始化
+31 |     print("GreenVRP Engine API 启动�?..")
+   |     ^^^^^
+32 |     yield
+33 |     # 关闭时清�?   |
+help: Remove `print`
+
+T201 `print` found
+  --> api\main.py:34:5
+   |
+32 |     yield
+33 |     # 关闭时清�?34 |     print("GreenVRP Engine API 关闭�?..")
+   |     ^^^^^
+   |
+help: Remove `print`
+
+Found 3 errors.
+[*] 1 fixable with the `--fix` option (2 hidden fixes can be enabled with the `--unsafe-fixes` option).

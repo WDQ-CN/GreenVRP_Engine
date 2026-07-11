@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 虚拟环境
+venv/
+.venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# 测试和文档
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+*.md
+!README.md
+
+# 日志
+*.log
+logs/
+
+# 本地数据（大数据文件不应该放入镜像）
+*.csv
+!data/mock_customers.csv
+
+# 其他
+.joycode/
+__pycache__/

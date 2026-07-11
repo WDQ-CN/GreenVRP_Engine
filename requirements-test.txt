@@ -1,0 +1,13 @@
+# 测试框架
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.0.0
+pytest-mock>=3.10.0
+
+# 测试工具
+httpx>=0.24.0  # 用于 API 测试
+coverage>=7.0.0
+
+# 代码质量
+mypy>=1.0.0
+ruff>=0.3.0

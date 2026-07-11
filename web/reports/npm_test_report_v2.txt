@@ -1,0 +1,265 @@
+﻿
+> web@0.0.0 test
+> vitest run --run
+
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.9 [39m[90mD:/ZhuoMian/GreenVRP_Engine/web[39m
+
+ [32m✓[39m src/hooks/__tests__/useVehicleConfig.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 61[2mms[22m[39m
+ [32m✓[39m src/hooks/__tests__/useSolveValidation.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 71[2mms[22m[39m
+[90mstdout[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpSolverRepository[2m > [22m[2msolveSync calls api.post with correct payload
+[22m[39m[SolverRepo] solveSync 请求: customers=2, vehicleConfig=无, params=无
+
+[90mstdout[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpSolverRepository[2m > [22m[2msolveSync calls api.post with correct payload
+[22m[39m[SolverRepo] solveSync 完成: status=completed, elapsed=1ms
+
+[90mstdout[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpSolverRepository[2m > [22m[2msolveAsync calls api.post with /solve/async
+[22m[39m[SolverRepo] solveAsync 请求: customers=0, callback=https://example.com/callback
+
+[90mstdout[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpSolverRepository[2m > [22m[2msolveAsync calls api.post with /solve/async
+[22m[39m[SolverRepo] solveAsync 响应: job_id=job-1, status=pending
+
+[90mstdout[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpSolverRepository[2m > [22m[2mgetJobStatus calls api.get
+[22m[39m[SolverRepo] getJobStatus: job_id=job-1
+
+[90mstdout[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpSolverRepository[2m > [22m[2mgetJobStatus calls api.get
+[22m[39m[SolverRepo] getJobStatus 响应: job_id=job-1, status=processing
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mresolves when job completes
+[22m[39m[Solver] pollJobStatus 委托: job_id=job-1, options={ intervalMs: [33m100[39m }
+[SolverRepo] pollJobStatus 开始: job_id=job-1, interval=100ms, maxAttempts=120
+[SolverRepo] getJobStatus: job_id=job-1
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mresolves when job completes
+[22m[39m[SolverRepo] getJobStatus 响应: job_id=job-1, status=completed
+
+[90mstdout[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpJobStatusRepository[2m > [22m[2mresolves when job completes
+[22m[39m[SolverRepo] pollJobStatus 开始: job_id=job-1, interval=50ms, maxAttempts=120
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mresolves when job completes
+[22m[39m[SolverRepo] pollJobStatus 轮询 #1: job_id=job-1, status=completed
+[SolverRepo] pollJobStatus 完成: job_id=job-1, attempts=1
+
+[90mstdout[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpJobStatusRepository[2m > [22m[2mresolves when job completes
+[22m[39m[SolverRepo] pollJobStatus 轮询 #1: job_id=job-1, status=completed
+[SolverRepo] pollJobStatus 完成: job_id=job-1, attempts=1
+
+[90mstdout[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpJobStatusRepository[2m > [22m[2mpolls until job completes
+[22m[39m[SolverRepo] pollJobStatus 开始: job_id=job-1, interval=50ms, maxAttempts=120
+
+[90mstdout[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpJobStatusRepository[2m > [22m[2mpolls until job completes
+[22m[39m[SolverRepo] pollJobStatus 轮询 #1: job_id=job-1, status=pending
+
+ [32m✓[39m src/lib/utils.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mpolls until job completes
+[22m[39m[Solver] pollJobStatus 委托: job_id=job-1, options={
+  intervalMs: [33m100[39m,
+  onProgress: [36m<ref *1>[39m [Function: Mock] {
+    [length]: [33m0[39m,
+    [name]: [32m'Mock'[39m,
+    [prototype]: { [constructor]: [36m[Circular *1][39m },
+    _isMockFunction: [33mtrue[39m,
+    getMockImplementation: [Function (anonymous)] { [length]: [33m0[39m, [name]: [32m''[39m },
+    mock: {
+      calls: [ [length]: [33m0[39m ],
+      contexts: [ [length]: [33m0[39m ],
+      instances: [ [length]: [33m0[39m ],
+      invocationCallOrder: [ [length]: [33m0[39m ],
+      settledResults: [ [length]: [33m0[39m ],
+      results: [ [length]: [33m0[39m ],
+      lastCall: [36m[Getter][39m
+    },
+    mockImplementation: [36m<ref *2>[39m [Function: mockImplementation] {
+      [length]: [33m1[39m,
+      [name]: [32m'mockImplementation'[39m,
+      [prototype]: { [constructor]: [36m[Circular *2][39m }
+    },
+    mockImplementationOnce: [36m<ref *3>[39m [Function: mockImplementationOnce] {
+      [length]: [33m1[39m,
+      [name]: [32m'mockImplementationOnce'[39m,
+      [prototype]: { [constructor]: [36m[Circular *3][39m }
+    },
+    withImplementation: [36m<ref *4>[39m [Function: withImplementation] {
+      [length]: [33m2[39m,
+      [name]: [32m'withImplementation'[39m,
+      [prototype]: { [constructor]: [36m[Circular *4][39m }
+    },
+    mockReturnThis: [36m<ref *5>[39m [Function: mockReturnThis] {
+      [length]: [33m0[39m,
+      [name]: [32m'mockReturnThis'[39m,
+      [prototype]: { [constructor]: [36m[Circular *5][39m }
+    },
+    mockReturnValue: [36m<ref *6>[39m [Function: mockReturnValue] {
+      [length]: [33m1[39m,
+      [name]: [32m'mockReturnValue'[39m,
+      [prototype]: { [constructor]: [36m[Circular *6][39m }
+    },
+    mockReturnValueOnce: [36m<ref *7>[39m [Function: mockReturnValueOnce] {
+      [length]: [33m1[39m,
+      [name]: [32m'mockReturnValueOnce'[39m,
+      [prototype]: { [constructor]: [36m[Circular *7][39m }
+    },
+    mockThrow: [36m<ref *8>[39m [Function: mockThrow] {
+      [length]: [33m1[39m,
+      [name]: [32m'mockThrow'[39m,
+      [prototype]: { [constructor]: [36m[Circular *8][39m }
+    },
+    mockThrowOnce: [36m<ref *9>[39m [Function: mockThrowOnce] {
+      [length]: [33m1[39m,
+      [name]: [32m'mockThrowOnce'[39m,
+      [prototype]: { [constructor]: [36m[Circular *9][39m }
+    },
+    mockResolvedValue: [36m<ref *10>[39m [Function: mockResolvedValue] {
+      [length]: [33m1[39m,
+      [name]: [32m'mockResolvedValue'[39m,
+      [prototype]: { [constructor]: [36m[Circular *10][39m }
+    },
+    mockResolvedValueOnce: [36m<ref *11>[39m [Function: mockResolvedValueOnce] {
+      [length]: [33m1[39m,
+      [name]: [32m'mockResolvedValueOnce'[39m,
+      [prototype]: { [constructor]: [36m[Circular *11][39m }
+    },
+    mockRejectedValue: [36m<ref *12>[39m [Function: mockRejectedValue] {
+      [length]: [33m1[39m,
+      [name]: [32m'mockRejectedValue'[39m,
+      [prototype]: { [constructor]: [36m[Circular *12][39m }
+    },
+    mockRejectedValueOnce: [36m<ref *13>[39m [Function: mockRejectedValueOnce] {
+      [length]: [33m1[39m,
+      [name]: [32m'mockRejectedValueOnce'[39m,
+      [prototype]: { [constructor]: [36m[Circular *13][39m }
+    },
+    mockClear: [36m<ref *14>[39m [Function: mockClear] {
+      [length]: [33m0[39m,
+      [name]: [32m'mockClear'[39m,
+      [prototype]: { [constructor]: [36m[Circular *14][39m }
+    },
+    mockReset: [36m<ref *15>[39m [Function: mockReset] {
+      [length]: [33m0[39m,
+      [name]: [32m'mockReset'[39m,
+      [prototype]: { [constructor]: [36m[Circular *15][39m }
+    },
+    mockRestore: [36m<ref *16>[39m [Function: mockRestore] {
+      [length]: [33m0[39m,
+      [name]: [32m'mockRestore'[39m,
+      [prototype]: { [constructor]: [36m[Circular *16][39m }
+    },
+    mockName: [36m<ref *17>[39m [Function: mockName] {
+      [length]: [33m1[39m,
+      [name]: [32m'mockName'[39m,
+      [prototype]: { [constructor]: [36m[Circular *17][39m }
+    },
+    getMockName: [36m<ref *18>[39m [Function: getMockName] {
+      [length]: [33m0[39m,
+      [name]: [32m'getMockName'[39m,
+      [prototype]: { [constructor]: [36m[Circular *18][39m }
+    },
+    [32mSymbol(Symbol.dispose)[39m: [Function (anonymous)] { [length]: [33m0[39m, [name]: [32m''[39m }
+  }
+}
+[SolverRepo] pollJobStatus 开始: job_id=job-1, interval=100ms, maxAttempts=120
+[SolverRepo] getJobStatus: job_id=job-1
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mpolls until job completes
+[22m[39m[SolverRepo] getJobStatus 响应: job_id=job-1, status=pending
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mpolls until job completes
+[22m[39m[SolverRepo] pollJobStatus 轮询 #1: job_id=job-1, status=pending
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mpolls until job completes
+[22m[39m[SolverRepo] getJobStatus: job_id=job-1
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mpolls until job completes
+[22m[39m[SolverRepo] getJobStatus 响应: job_id=job-1, status=pending
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mpolls until job completes
+[22m[39m[SolverRepo] pollJobStatus 轮询 #2: job_id=job-1, status=pending
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mpolls until job completes
+[22m[39m[SolverRepo] getJobStatus: job_id=job-1
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mpolls until job completes
+[22m[39m[SolverRepo] getJobStatus 响应: job_id=job-1, status=completed
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mpolls until job completes
+[22m[39m[SolverRepo] pollJobStatus 轮询 #3: job_id=job-1, status=completed
+[SolverRepo] pollJobStatus 完成: job_id=job-1, attempts=3
+node.exe : [90mstderr[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mthrows when job fails
+At line:1 char:1
++ & "D:\Node/node.exe" "D:\Node/node_modules/npm/bin/npm-cli.js" run te ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([90mstderr[2m... when job fails:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+[22m[39m[SolverRepo] pollJobStatus 失败: job_id=job-1, error=求解失败
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mthrows when job fails
+[22m[39m[Solver] pollJobStatus 委托: job_id=job-1, options={ intervalMs: [33m100[39m }
+[SolverRepo] pollJobStatus 开始: job_id=job-1, interval=100ms, maxAttempts=120
+[SolverRepo] getJobStatus: job_id=job-1
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mthrows when job fails
+[22m[39m[SolverRepo] getJobStatus 响应: job_id=job-1, status=failed
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mthrows when job fails
+[22m[39m[SolverRepo] pollJobStatus 轮询 #1: job_id=job-1, status=failed
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mthrows on abort signal
+[22m[39m[Solver] pollJobStatus 委托: job_id=job-1, options={ intervalMs: [33m100[39m, signal: AbortSignal { aborted: [33mfalse[39m } }
+[SolverRepo] pollJobStatus 开始: job_id=job-1, interval=100ms, maxAttempts=120
+[SolverRepo] getJobStatus: job_id=job-1
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mthrows on abort signal
+[22m[39m[SolverRepo] getJobStatus 响应: job_id=job-1, status=pending
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mthrows on abort signal
+[22m[39m[SolverRepo] pollJobStatus 轮询 #1: job_id=job-1, status=pending
+
+ [32m✓[39m src/hooks/__tests__/useCustomers.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 78[2mms[22m[39m
+[90mstdout[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpJobStatusRepository[2m > [22m[2mpolls until job completes
+[22m[39m[SolverRepo] pollJobStatus 轮询 #2: job_id=job-1, status=pending
+
+[90mstdout[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpJobStatusRepository[2m > [22m[2mpolls until job completes
+[22m[39m[SolverRepo] pollJobStatus 轮询 #3: job_id=job-1, status=completed
+[SolverRepo] pollJobStatus 完成: job_id=job-1, attempts=3
+
+[90mstdout[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpJobStatusRepository[2m > [22m[2mthrows when job fails
+[22m[39m[SolverRepo] pollJobStatus 开始: job_id=job-1, interval=50ms, maxAttempts=120
+
+[90mstderr[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpJobStatusRepository[2m > 
+[22m[2mthrows when job fails
+[22m[39m[SolverRepo] pollJobStatus 失败: job_id=job-1, error=求解失败
+
+[90mstdout[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpJobStatusRepository[2m > [22m[2mthrows when job fails
+[22m[39m[SolverRepo] pollJobStatus 轮询 #1: job_id=job-1, status=failed
+
+[90mstdout[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpJobStatusRepository[2m > [22m[2mthrows on abort signal
+[22m[39m[SolverRepo] pollJobStatus 开始: job_id=job-1, interval=50ms, maxAttempts=120
+
+[90mstdout[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpJobStatusRepository[2m > [22m[2mthrows on abort signal
+[22m[39m[SolverRepo] pollJobStatus 轮询 #1: job_id=job-1, status=pending
+
+[90mstderr[2m | src/lib/solver.test.ts[2m > [22m[2mpollJobStatus[2m > [22m[2mthrows on abort signal
+[22m[39m[SolverRepo] pollJobStatus 已取消: job_id=job-1
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mgetJobStatus[2m > [22m[2mfetches job status from api
+[22m[39m[Solver] getJobStatus 委托: job_id=job-1
+[SolverRepo] getJobStatus: job_id=job-1
+
+[90mstdout[2m | src/lib/solver.test.ts[2m > [22m[2mgetJobStatus[2m > [22m[2mfetches job status from api
+[22m[39m[SolverRepo] getJobStatus 响应: job_id=job-1, status=processing
+
+ [32m✓[39m src/lib/solver.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 134[2mms[22m[39m
+ [32m✓[39m src/stores/authStore.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 35[2mms[22m[39m
+[90mstderr[2m | src/lib/repositories/__tests__/solverRepository.test.ts[2m > [22m[2mHttpJobStatusRepository[2m > 
+[22m[2mthrows on abort signal
+[22m[39m[SolverRepo] pollJobStatus 已取消: job_id=job-1
+
+ [32m✓[39m src/lib/repositories/__tests__/solverRepository.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 176[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m7 passed[39m[22m[90m (7)[39m
+[2m      Tests [22m [1m[32m33 passed[39m[22m[90m (33)[39m
+[2m   Start at [22m 20:34:38
+[2m   Duration [22m 2.41s[2m (transform 473ms, setup 1.07s, import 1.61s, tests 567ms, environment 9.37s)[22m
+
