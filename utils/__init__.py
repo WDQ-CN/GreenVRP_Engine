@@ -11,6 +11,8 @@ from utils.geo import (
     haversine_distance_vectorized,
     point_in_circle,
     point_in_polygon,
+    route_distance_km,
+    segments_intersect,
 )
 from utils.time import (
     calculate_travel_time,
@@ -31,6 +33,8 @@ __all__ = [
     "destination_point",
     "point_in_circle",
     "point_in_polygon",
+    "route_distance_km",
+    "segments_intersect",
     # time
     "minutes_to_time_str",
     "time_str_to_minutes",

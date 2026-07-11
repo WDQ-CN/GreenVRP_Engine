@@ -5,9 +5,12 @@
 """
 
 import asyncio
+import logging
 import time
 import uuid
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -22,6 +25,14 @@ from core import (
     solve_with_multiple_strategies,
 )
 from core.solver import solve_with_multiple_strategies_parallel
+from exceptions.errors import (
+    GreenVRPError,
+    SolverError,
+    ConfigurationError,
+    DistanceCalculationError,
+    JobNotFoundError,
+    JobTimeoutError,
+)
 from .redis_job_manager import create_job_manager
 
 
@@ -165,16 +176,17 @@ class SolverService:
                 if callback_url:
                     await self._send_callback(callback_url, job_id, "completed")
 
-            except Exception as e:
+            except (SolverError, ConfigurationError, DistanceCalculationError, JobNotFoundError, JobTimeoutError, Exception) as e:
+                error_msg = f"{type(e).__name__}: {e}" if not isinstance(e, GreenVRPError) else e.to_dict().get("message", str(e))
                 self.job_manager.update_job(
                     job_id,
                     status="failed",
                     completed_at=datetime.now(),
-                    error_message=str(e),
+                    error_message=error_msg,
                 )
 
                 if callback_url:
-                    await self._send_callback(callback_url, job_id, "failed", str(e))
+                    await self._send_callback(callback_url, job_id, "failed", error_msg)
 
         # 启动后台任务
         asyncio.create_task(run_job())
@@ -200,7 +212,7 @@ class SolverService:
         # 再次验证 URL 安全性（防御性编程）
         is_valid, error_msg = security_config.validate_callback_url(url)
         if not is_valid:
-            print(f"回调 URL 验证失败：{error_msg}")
+            logger.error(f"回调 URL 验证失败：{error_msg}")
             return
 
         payload = {
@@ -217,13 +229,13 @@ class SolverService:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(url, json=payload)
                 response.raise_for_status()
-                print(f"回调成功：{url}, 状态码：{response.status_code}")
+                logger.info(f"回调成功：{url}, 状态码：{response.status_code}")
         except httpx.TimeoutException:
-            print(f"回调超时：{url}")
+            logger.error(f"回调超时：{url}")
         except httpx.RequestError as e:
-            print(f"回调请求失败：{url}, 错误：{str(e)}")
+            logger.error(f"回调请求失败：{url}, 错误：{str(e)}")
         except Exception as e:
-            print(f"回调异常：{url}, 错误：{str(e)}")
+            logger.error(f"回调异常：{url}, 错误：{str(e)}")
 
     def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
         """获取任务状态。"""

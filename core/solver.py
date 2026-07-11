@@ -24,7 +24,7 @@ import hashlib
 import multiprocessing
 import time
 from collections import OrderedDict
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, TimeoutError, as_completed, wait, FIRST_COMPLETED
 from functools import lru_cache
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -33,14 +33,27 @@ import pandas as pd
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
 from config.vehicles import DEFAULT_VEHICLE_CONFIG
+from config.constants import WORK_DAY_END_MIN
 from logging_config import get_logger
 
 from .distance import DistanceMatrixCache, build_distance_matrix, build_time_matrix
 from data_types.solution import SolutionDict
 from exceptions.errors import SolverError
 
-# 使用统一的日志配置
-logger = get_logger(__name__)
+# 延迟导入 2-opt 后处理器（避免循环依赖）
+_route_optimize = None
+
+
+def _get_route_optimizer():
+    """延迟加载 2-opt 后处理器。"""
+    global _route_optimize
+    if _route_optimize is None:
+        from optimization.route_optimize import post_process_solution as _r
+        _route_optimize = _r
+    return _route_optimize
+
+# 使用统一的日志配置（green_vrp 命名空间确保 SensitiveDataFilter 生效）
+logger = get_logger("green_vrp.solver")
 
 
 class SolverInstancePool:
@@ -228,9 +241,11 @@ class GreenVRPSolver:
         # 使用缓存构建距离矩阵（米）
         self.distance_matrix = self._distance_cache.get_or_compute(self.locations, scale=1000)
 
-        # 提取需求和服务时间（使用 NumPy 优化）
+        # 预提取列数据为列表（避免 .iloc 循环 O(n²) 性能问题）
         self.demands = self.customers_df["demand"].values.tolist()
         self.service_times = self.customers_df["service_time_min"].values.tolist()
+        self.customer_ids = self.customers_df["id"].values.tolist()
+        self.customer_names = self.customers_df["name"].values.tolist()
         
         # 优化时间窗提取 (避免 iterrows())
         tw_earliest = [int(x) for x in self.customers_df["tw_earliest"].values]
@@ -313,15 +328,69 @@ class GreenVRPSolver:
 
         return time_callback
 
+    def _set_small_scale_params(
+        self, params: pywrapcp.DefaultRoutingSearchParameters, problem_difficulty: float
+    ) -> None:
+        """小规模（≤20）：使用最精确的策略。"""
+        params.first_solution_strategy = (
+            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+        )
+        params.local_search_metaheuristic = (
+            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+        )
+        params.time_limit.seconds = int(
+            min(self.search_time_limit, 15) * problem_difficulty
+        )
+
+    def _set_medium_scale_params(
+        self, params: pywrapcp.DefaultRoutingSearchParameters, problem_difficulty: float
+    ) -> None:
+        """中等规模（21~50）：平衡精度和速度。"""
+        params.first_solution_strategy = (
+            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+        )
+        params.local_search_metaheuristic = (
+            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+        )
+        params.time_limit.seconds = int(self.search_time_limit * problem_difficulty)
+
+    def _set_large_scale_params(
+        self, params: pywrapcp.DefaultRoutingSearchParameters, problem_difficulty: float
+    ) -> None:
+        """大规模（51~200）：使用更快的方法。"""
+        params.first_solution_strategy = (
+            routing_enums_pb2.FirstSolutionStrategy.SWEEP
+        )
+        params.local_search_metaheuristic = (
+            routing_enums_pb2.LocalSearchMetaheuristic.TABU_SEARCH
+        )
+        params.time_limit.seconds = int(
+            max(self.search_time_limit, 60) * problem_difficulty
+        )
+
+    def _set_huge_scale_params(
+        self, params: pywrapcp.DefaultRoutingSearchParameters, problem_difficulty: float
+    ) -> None:
+        """超大规模（>200）：并行求解策略 + 增加时间限制。"""
+        params.first_solution_strategy = (
+            routing_enums_pb2.FirstSolutionStrategy.SWEEP
+        )
+        params.local_search_metaheuristic = (
+            routing_enums_pb2.LocalSearchMetaheuristic.TABU_SEARCH
+        )
+        params.time_limit.seconds = int(
+            max(self.search_time_limit * 2, 120) * problem_difficulty
+        )
+
     def _get_adaptive_search_params(
         self, num_locations: int, problem_difficulty: float = 1.0
     ) -> pywrapcp.DefaultRoutingSearchParameters:
         """
-        根据问题规模自适应调整搜索参数（v3优化版）。
+        根据问题规模自适应调整搜索参数（v4优化版）。
 
         小规模问题使用更精确的搜索策略，
         大规模问题使用更快的启发式方法。
-        v3新增：考虑问题难度动态调整时间限制
+        v4新增：规模自适应的 GLS lambda、LNS 时限、二次清理比例
 
         Args:
             num_locations: 节点数量
@@ -337,54 +406,31 @@ class GreenVRPSolver:
 
         # 根据问题规模选择初始解策略
         if effective_size <= 20:
-            # 小规模：使用最精确的策略
-            search_parameters.first_solution_strategy = (
-                routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-            )
-            search_parameters.local_search_metaheuristic = (
-                routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
-            )
-            # v3: 动态时间调整
-            search_parameters.time_limit.seconds = int(
-                min(self.search_time_limit, 15) * problem_difficulty
-            )
-
+            self._set_small_scale_params(search_parameters, problem_difficulty)
+            # 小规模：利用更多，快速收敛
+            search_parameters.guided_local_search_lambda_coefficient = 0.2
+            search_parameters.lns_time_limit.seconds = 0
+            search_parameters.secondary_ls_time_limit_ratio = 0.1
         elif effective_size <= 50:
-            # 中等规模：平衡精度和速度
-            search_parameters.first_solution_strategy = (
-                routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-            )
-            search_parameters.local_search_metaheuristic = (
-                routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
-            )
-            search_parameters.time_limit.seconds = int(self.search_time_limit * problem_difficulty)
-
+            self._set_medium_scale_params(search_parameters, problem_difficulty)
+            # 中等规模：平衡探索与利用
+            search_parameters.guided_local_search_lambda_coefficient = 0.5
+            search_parameters.lns_time_limit.seconds = 5
+            search_parameters.secondary_ls_time_limit_ratio = 0.08
         elif effective_size <= 200:
-            # 大规模：使用更快的方法
-            search_parameters.first_solution_strategy = (
-                routing_enums_pb2.FirstSolutionStrategy.SWEEP
-            )
-            search_parameters.local_search_metaheuristic = (
-                routing_enums_pb2.LocalSearchMetaheuristic.TABU_SEARCH
-            )
-            search_parameters.time_limit.seconds = int(
-                max(self.search_time_limit, 60) * problem_difficulty
-            )
-
+            self._set_large_scale_params(search_parameters, problem_difficulty)
+            # 大规模：偏向探索
+            search_parameters.guided_local_search_lambda_coefficient = 0.8
+            search_parameters.lns_time_limit.seconds = 10
+            search_parameters.secondary_ls_time_limit_ratio = 0.05
         else:
-            # 超大规模：使用并行求解策略
-            search_parameters.first_solution_strategy = (
-                routing_enums_pb2.FirstSolutionStrategy.SWEEP
-            )
-            search_parameters.local_search_metaheuristic = (
-                routing_enums_pb2.LocalSearchMetaheuristic.TABU_SEARCH
-            )
-            # 超大问题增加时间限制
-            search_parameters.time_limit.seconds = int(
-                max(self.search_time_limit * 2, 120) * problem_difficulty
-            )
+            self._set_huge_scale_params(search_parameters, problem_difficulty)
+            # 超大规模：高探索 + 限制 LNS 单次时间
+            search_parameters.guided_local_search_lambda_coefficient = 1.0
+            search_parameters.lns_time_limit.seconds = 15
+            search_parameters.secondary_ls_time_limit_ratio = 0.05
 
-        # v3: 添加高级搜索参数优化
+        # 通用优化参数
         search_parameters.use_cp_sat = 0  # 对于VRP，CP-SAT通常不如传统方法
         search_parameters.log_search = 0  # 静默模式
 
@@ -440,19 +486,32 @@ class GreenVRPSolver:
         routing.AddDimensionWithVehicleTransits(
             time_callback_indices,
             30,   # 等待时间上界（分钟）
-            960,  # 时间范围上界（16小时）
+            max(WORK_DAY_END_MIN, 960),  # 时间范围上界（使用工作日结束时间）
             False,  # 不强制从零开始
             "Time",
         )
         time_dimension = routing.GetDimensionOrDie("Time")
 
         # 设置时间窗约束（跳过仓库）
+        # 注：SetRange 的上界必须宽于 SetCumulVarSoftUpperBound，
+        # 否则软惩罚无法生效（硬约束会阻止变量超出 latest）
+        # 同时上界不能超过时间维度的上界
+        time_upper_bound = max(WORK_DAY_END_MIN, 960)
         for location_idx in range(1, num_locations):
             earliest, latest = self.time_windows[location_idx]
             index = self.manager.NodeToIndex(location_idx)
-            time_dimension.CumulVar(index).SetRange(earliest, latest)
+            # 硬约束：不能早于 earliest
+            # 软约束（通过惩罚）：尽量不晚于 latest
+            # SetRange 上界设 latest+15 给软惩罚留出空间，
+            # 同时限制最大迟到不超过 15 分钟
+            time_dimension.CumulVar(index).SetRange(
+                earliest,
+                min(latest + 15, time_upper_bound),
+            )
+            # 迟到惩罚：500 米/分钟 ≈ 迟到15分钟 = 7.5km等效距离
+            # 这个惩罚使求解器只有在绕路超过 7.5km 时才选择迟到
             time_dimension.SetCumulVarSoftUpperBound(
-                index, latest, int(self.time_penalty_per_min)
+                index, latest, 500
             )
 
         return routing, time_dimension
@@ -552,11 +611,11 @@ class GreenVRPSolver:
 
     def _build_stop_info(self, node_index: int, arrival_time: int,
                           departure_time: int, late_minutes: int) -> Dict[str, Any]:
-        """构建单站点的数据结构。"""
+        """构建单站点的数据结构（使用预提取数组避免 .iloc O(n) 调用）。"""
         return {
             "node": node_index,
-            "customer_id": int(self.customers_df.iloc[node_index]["id"]),
-            "customer_name": self.customers_df.iloc[node_index]["name"],
+            "customer_id": int(self.customer_ids[node_index]),
+            "customer_name": str(self.customer_names[node_index]),
             "lat": self.locations[node_index][0],
             "lon": self.locations[node_index][1],
             "demand": int(self.demands[node_index]),
@@ -584,8 +643,8 @@ class GreenVRPSolver:
         # 非0索引说明路线未正常结束，但仍记录
         return {
             "node": end_index,
-            "customer_id": int(self.customers_df.iloc[end_index]["id"]),
-            "customer_name": self.customers_df.iloc[end_index]["name"],
+            "customer_id": int(self.customer_ids[end_index]),
+            "customer_name": str(self.customer_names[end_index]),
             "lat": self.locations[end_index][0],
             "lon": self.locations[end_index][1],
         }
@@ -687,6 +746,61 @@ class GreenVRPSolver:
         }
 
 
+def _get_default_strategies() -> List[Tuple[int, int]]:
+    """获取默认求解策略组合列表（5种策略，覆盖更广的搜索空间）。"""
+    return [
+        (
+            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC,
+            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH,
+        ),
+        (
+            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC,
+            routing_enums_pb2.LocalSearchMetaheuristic.TABU_SEARCH,
+        ),
+        (
+            routing_enums_pb2.FirstSolutionStrategy.AUTOMATIC,
+            routing_enums_pb2.LocalSearchMetaheuristic.SIMULATED_ANNEALING,
+        ),
+        (
+            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC,
+            routing_enums_pb2.LocalSearchMetaheuristic.GREEDY_DESCENT,
+        ),
+        (
+            routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION,
+            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH,
+        ),
+    ]
+
+
+def _select_best_solution(
+    results: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    从多个求解结果中选择最优解。
+
+    评分公式综合三项指标（单位：公里等效距离）：
+    - 总距离：直接使用
+    - 迟到惩罚：0.5 km/min（对齐求解器内部 500 m/min）
+    - 车辆使用惩罚：5.0 km/辆（反映固定成本差异，鼓励合并路线）
+    """
+    best_solution = None
+    best_score = float("inf")
+
+    for result in results:
+        if result["solution_status"] == "SUCCESS":
+            vehicles = sum(result.get("vehicles_used", {}).values())
+            score = (
+                result["total_distance"]
+                + result["total_late_minutes"] * 0.5
+                + vehicles * 5.0
+            )
+            if score < best_score:
+                best_score = score
+                best_solution = result
+
+    return best_solution
+
+
 def solve_with_multiple_strategies(
     customers_df: pd.DataFrame,
     vehicle_config: Dict[str, Dict[str, Any]],
@@ -708,21 +822,7 @@ def solve_with_multiple_strategies(
     Returns:
         最优求解结果
     """
-    # 策略组合（避免 SWEEP，新版本需要额外配置）
-    strategies = [
-        (
-            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC,
-            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH,
-        ),
-        (
-            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC,
-            routing_enums_pb2.LocalSearchMetaheuristic.TABU_SEARCH,
-        ),
-        (
-            routing_enums_pb2.FirstSolutionStrategy.AUTOMATIC,
-            routing_enums_pb2.LocalSearchMetaheuristic.SIMULATED_ANNEALING,
-        ),
-    ]
+    strategies = _get_default_strategies()
 
     # 创建单一求解器实例（复用距离矩阵等）
     solver = GreenVRPSolver(
@@ -732,34 +832,49 @@ def solve_with_multiple_strategies(
         search_time_limit=time_limit,
     )
 
-    best_solution = None
-    best_cost = float("inf")
-    result = None  # 确保 strategies 为空时不会出现 NameError
-
     # 每个策略分配的时间
     strategy_time = max(5, time_limit // len(strategies))
 
+    results = []
     for first_solution, metaheuristic in strategies:
-        # 复用求解器实例
         result = solver.solve_with_params(
             first_solution_strategy=first_solution,
             metaheuristic=metaheuristic,
             time_limit=strategy_time,
         )
+        results.append(result)
 
-        if result["solution_status"] == "SUCCESS":
-            # 计算总成本（简化版：距离 + 迟到惩罚）
-            cost = result["total_distance"] + result["total_late_minutes"] * 0.1
-
-            if cost < best_cost:
-                best_cost = cost
-                best_solution = result
-
+    best_solution = _select_best_solution(results)
     if best_solution is None:
         # 所有策略都失败，返回最后一次尝试的结果
-        return result
+        return results[-1] if results else _create_empty_solution()
+
+    # 2-opt 后处理：消除路线交叉，缩短总距离
+    try:
+        post_process = _get_route_optimizer()
+        best_solution = post_process(best_solution, vehicle_config)
+    except Exception as e:
+        logger.warning("2-opt 后处理失败（不影响原始解）: %s", str(e)[:200] if e else "未知错误")
 
     return best_solution
+
+
+def _create_empty_solution(
+    vehicle_config: Optional[Dict[str, Dict[str, Any]]] = None,
+    status: str = "NO_SOLUTION_FOUND",
+) -> Dict[str, Any]:
+    """创建空的求解结果（用于策略全部失败时的降级返回）。"""
+    vehicles_used = {}
+    if vehicle_config:
+        vehicles_used = {v_type: 0 for v_type in vehicle_config}
+    return {
+        "routes": [],
+        "total_distance": 0,
+        "vehicles_used": vehicles_used,
+        "total_late_minutes": 0,
+        "solution_status": status,
+        "solve_time_seconds": 0,
+    }
 
 
 def _solve_single_strategy(
@@ -797,7 +912,7 @@ def _solve_single_strategy(
             time_limit=time_limit,
         )
     except Exception as e:
-        logger.warning(f"策略求解失败: {e}")
+        logger.warning("策略求解失败: %s", str(e)[:200] if e else "未知错误")
         return {
             "routes": [],
             "total_distance": 0,
@@ -806,6 +921,79 @@ def _solve_single_strategy(
             "solution_status": "ERROR",
             "solve_time_seconds": 0,
         }
+
+
+def _submit_and_collect_strategies(
+    customers_df: pd.DataFrame,
+    vehicle_config: Dict[str, Dict[str, Any]],
+    time_penalty_per_min: float,
+    strategy_time: int,
+    strategies: List[Tuple[int, int]],
+    max_workers: int,
+) -> List[Dict[str, Any]]:
+    """
+    提交策略到进程池并收集所有结果（带超时和取消机制）。
+
+    修复 v1：使用 as_completed 收集所有策略结果，而非仅第一个完成者。
+    修复 v2：正确引用 CancelledError。
+
+    Args:
+        customers_df: 客户数据
+        vehicle_config: 车型配置
+        time_penalty_per_min: 迟到惩罚
+        strategy_time: 每个策略求解时间
+        strategies: 策略列表
+        max_workers: 最大进程数
+
+    Returns:
+        成功的求解结果列表
+    """
+    from concurrent.futures import CancelledError
+
+    results: List[Dict[str, Any]] = []
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _solve_single_strategy,
+                customers_df,
+                vehicle_config,
+                time_penalty_per_min,
+                strategy_time,
+                first_solution,
+                metaheuristic,
+            ): (first_solution, metaheuristic)
+            for first_solution, metaheuristic in strategies
+        }
+
+        # 使用 as_completed 收集所有策略结果
+        # 每个策略额外给 30 秒宽限时间（用于进程启动、数据序列化）
+        per_strategy_timeout = strategy_time + 30
+        completed_count = 0
+        for future in as_completed(futures.keys(), timeout=per_strategy_timeout):
+            completed_count += 1
+            try:
+                result = future.result(timeout=5)
+                if result["solution_status"] == "SUCCESS":
+                    results.append(result)
+            except TimeoutError:
+                logger.warning("策略结果获取超时")
+            except CancelledError:
+                continue
+            except Exception as e:
+                logger.warning("策略执行失败: %s", str(e)[:200] if e else "未知错误")
+
+        # 取消尚未完成的任务
+        remaining = len(futures) - completed_count
+        if remaining > 0:
+            logger.info("正在取消 %d 个超时策略", remaining)
+        for future in futures:
+            if not future.done():
+                future.cancel()
+
+    return results
+
+    return results
 
 
 def solve_with_multiple_strategies_parallel(
@@ -834,21 +1022,7 @@ def solve_with_multiple_strategies_parallel(
         由于Python GIL，使用ProcessPoolExecutor实现真正的并行。
         进程间通信有一定开销，小规模问题可能不如串行版本快。
     """
-    # 策略组合（避免 SWEEP，新版本需要额外配置）
-    strategies = [
-        (
-            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC,
-            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH,
-        ),
-        (
-            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC,
-            routing_enums_pb2.LocalSearchMetaheuristic.TABU_SEARCH,
-        ),
-        (
-            routing_enums_pb2.FirstSolutionStrategy.AUTOMATIC,
-            routing_enums_pb2.LocalSearchMetaheuristic.SIMULATED_ANNEALING,
-        ),
-    ]
+    strategies = _get_default_strategies()
 
     # 每个策略分配的时间
     strategy_time = max(5, time_limit)
@@ -857,34 +1031,15 @@ def solve_with_multiple_strategies_parallel(
     if max_workers is None:
         max_workers = min(len(strategies), multiprocessing.cpu_count())
 
-    results = []
     start_time = time.time()
 
     try:
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(
-                    _solve_single_strategy,
-                    customers_df,
-                    vehicle_config,
-                    time_penalty_per_min,
-                    strategy_time,
-                    first_solution,
-                    metaheuristic,
-                ): (first_solution, metaheuristic)
-                for first_solution, metaheuristic in strategies
-            }
-
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                    if result["solution_status"] == "SUCCESS":
-                        results.append(result)
-                except Exception as e:
-                    logger.warning(f"策略执行失败: {e}")
+        results = _submit_and_collect_strategies(
+            customers_df, vehicle_config, time_penalty_per_min,
+            strategy_time, strategies, max_workers,
+        )
     except Exception as e:
-        logger.error(f"并行执行失败，回退到串行模式: {e}")
-        # 回退到串行模式
+        logger.error("并行执行失败，回退到串行模式: %s", str(e)[:200] if e else "未知错误")
         return solve_with_multiple_strategies(
             customers_df=customers_df,
             vehicle_config=vehicle_config,
@@ -895,7 +1050,6 @@ def solve_with_multiple_strategies_parallel(
     total_time = time.time() - start_time
 
     if not results:
-        # 所有策略都失败
         return {
             "routes": [],
             "total_distance": 0,
@@ -905,11 +1059,8 @@ def solve_with_multiple_strategies_parallel(
             "solve_time_seconds": round(total_time, 2),
         }
 
-    # 选择最优解
-    def compute_cost(r):
-        return r["total_distance"] + r["total_late_minutes"] * 0.1
-
-    best_solution = min(results, key=compute_cost)
+    best_solution = _select_best_solution(results)
+    if best_solution is None:
+        best_solution = results[0]
     best_solution["solve_time_seconds"] = round(total_time, 2)
-
     return best_solution

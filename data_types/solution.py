@@ -5,9 +5,50 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
 from .cost import CostResult
+
+
+# TypedDict 类型别名：描述 solver.py 和 cost.py 返回的字典结构
+class StopDict(TypedDict, total=False):
+    """站点数据字典结构（对应 solver._extract_solution 输出）。"""
+    node: int
+    customer_id: Optional[int]
+    customer_name: str
+    lat: float
+    lon: float
+    demand: int
+    arrival_time: int
+    departure_time: int
+    service_time: int
+    tw_earliest: int
+    tw_latest: int
+    late_minutes: int
+    is_late: bool
+
+
+class RouteDict(TypedDict, total=False):
+    """路线数据字典结构。"""
+    vehicle_id: int
+    vehicle_type: str
+    vehicle_color: str
+    capacity: int
+    stops: List[StopDict]
+    distance_km: float
+    total_demand: int
+    total_time_min: float
+    late_minutes: int
+
+
+class SolutionDict(TypedDict, total=False):
+    """求解结果字典结构（对应 solver.solve() 返回值）。"""
+    routes: List[RouteDict]
+    total_distance: float
+    vehicles_used: Dict[str, int]
+    total_late_minutes: int
+    solution_status: str
+    solve_time_seconds: float
 
 
 @dataclass
@@ -30,12 +71,12 @@ class Stop:
     node: int
     lat: Optional[float] = None
     lon: Optional[float] = None
-    arrival_time: Optional[float] = None
-    service_time: float = 0.0
-    tw_earliest: Optional[float] = None
-    tw_latest: Optional[float] = None
+    arrival_time: Optional[int] = None
+    service_time: int = 0
+    tw_earliest: Optional[int] = None
+    tw_latest: Optional[int] = None
     customer_id: Optional[int] = None
-    demand: float = 0.0
+    demand: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""

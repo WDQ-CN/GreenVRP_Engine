@@ -233,6 +233,110 @@ def point_in_polygon(
     return inside
 
 
+def segments_intersect(
+    lat1: float, lon1: float,
+    lat2: float, lon2: float,
+    lat3: float, lon3: float,
+    lat4: float, lon4: float,
+) -> bool:
+    """
+    判断两条线段是否相交（跨立实验，平面近似）。
+
+    适用于城市配送场景的小范围经纬度坐标。
+    使用快速排斥 + 跨立实验判断两条线段 (p1-p2) 与 (p3-p4) 是否相交。
+
+    Args:
+        lat1, lon1: 第一条线段起点
+        lat2, lon2: 第一条线段终点
+        lat3, lon3: 第二条线段起点
+        lat4, lon4: 第二条线段终点
+
+    Returns:
+        两条线段是否相交（端点重合不算相交）
+
+    Examples:
+        >>> segments_intersect(0, 0, 2, 2, 0, 2, 2, 0)  # 交叉
+        True
+        >>> segments_intersect(0, 0, 1, 1, 0, 2, 1, 3)  # 不交叉
+        False
+    """
+    def _cross(o_lat, o_lon, a_lat, a_lon, b_lat, b_lon):
+        """计算向量 (oa) × (ob) 的叉积 z 分量。"""
+        return (a_lat - o_lat) * (b_lon - o_lon) - (a_lon - o_lon) * (b_lat - o_lat)
+
+    def _on_segment(lat_p, lon_p, lat_q, lon_q, lat_r, lon_r):
+        """检查点 r 是否在线段 pq 上（四点共线且坐标在范围内）。"""
+        return (
+            min(lat_p, lat_q) <= lat_r <= max(lat_p, lat_q)
+            and min(lon_p, lon_q) <= lon_r <= max(lon_p, lon_q)
+        )
+
+    # 快速排斥：检查包围盒是否相交
+    if (
+        max(lat1, lat2) < min(lat3, lat4)
+        or max(lat3, lat4) < min(lat1, lat2)
+        or max(lon1, lon2) < min(lon3, lon4)
+        or max(lon3, lon4) < min(lon1, lon2)
+    ):
+        return False
+
+    # 跨立实验
+    d1 = _cross(lat3, lon3, lat4, lon4, lat1, lon1)
+    d2 = _cross(lat3, lon3, lat4, lon4, lat2, lon2)
+    d3 = _cross(lat1, lon1, lat2, lon2, lat3, lon3)
+    d4 = _cross(lat1, lon1, lat2, lon2, lat4, lon4)
+
+    if (d1 * d2 < 0) and (d3 * d4 < 0):
+        return True
+
+    # 共线情况：端点重合不算相交
+    if d1 == 0 and _on_segment(lat3, lon3, lat4, lon4, lat1, lon1):
+        return lat1 != lat3 or lon1 != lon3  # 端点重合不算
+    if d2 == 0 and _on_segment(lat3, lon3, lat4, lon4, lat2, lon2):
+        return lat2 != lat3 or lon2 != lon3
+    if d3 == 0 and _on_segment(lat1, lon1, lat2, lon2, lat3, lon3):
+        return lat3 != lat1 or lon3 != lon1
+    if d4 == 0 and _on_segment(lat1, lon1, lat2, lon2, lat4, lon4):
+        return lat4 != lat1 or lon4 != lon1
+
+    return False
+
+
+def route_distance_km(
+    stops: list,
+    lat_key: str = "lat",
+    lon_key: str = "lon",
+) -> float:
+    """
+    计算路线总里程（公里）。
+
+    遍历 stops 列表，使用 Haversine 公式累加相邻站点间的距离。
+
+    Args:
+        stops: 站点列表，每项为包含 lat/lon 的字典
+        lat_key: 纬度字段名
+        lon_key: 经度字段名
+
+    Returns:
+        路线总距离（公里）
+
+    Examples:
+        >>> stops = [{"lat": 0, "lon": 0}, {"lat": 1, "lon": 0}, {"lat": 1, "lon": 1}]
+        >>> round(route_distance_km(stops), 2)
+        222.39
+    """
+    if not stops or len(stops) < 2:
+        return 0.0
+
+    total = 0.0
+    for i in range(len(stops) - 1):
+        total += haversine_distance(
+            stops[i][lat_key], stops[i][lon_key],
+            stops[i + 1][lat_key], stops[i + 1][lon_key],
+        )
+    return total
+
+
 def build_distance_matrix(
     lats: List[float],
     lons: List[float],

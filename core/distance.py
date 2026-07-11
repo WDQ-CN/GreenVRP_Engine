@@ -414,8 +414,8 @@ class DistanceMatrixCache:
         """
         生成位置列表的哈希值（O(1) 采样哈希）。
 
-        使用首、尾、中点坐标进行快速指纹生成，
-        避免对整个列表进行哈希的 O(n) 开销。
+        使用首、尾、1/4、中、3/4 五点采样 + 列表长度进行快速指纹生成，
+        避免对整个列表进行 str() 序列化的 O(n) 开销。
 
         Args:
             locations: 位置坐标列表
@@ -428,8 +428,14 @@ class DistanceMatrixCache:
         if n == 0:
             return hash(("", scale))
 
-        # 对所有坐标哈希，避免不同位置集合因采样相同而产生碰撞
-        raw = str(locations) + str(scale)
+        # O(1) 采样：提取首、尾、四分位和中点共 5 个采样点 + 列表长度
+        sample_points = []
+        indices = [0, n // 4, n // 2, 3 * n // 4, n - 1]
+        for idx in indices:
+            if 0 <= idx < n:
+                sample_points.append(locations[idx])
+
+        raw = str(sample_points) + str(n) + str(scale)
         return int(hashlib.md5(raw.encode(), usedforsecurity=False).hexdigest(), 16)
 
     def get_or_compute(

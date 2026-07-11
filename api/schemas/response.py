@@ -14,7 +14,7 @@ class StopData(BaseModel):
     """站点数据。"""
 
     node: int = Field(..., description="节点索引")
-    customer_id: int = Field(..., description="客户ID")
+    customer_id: Optional[int] = Field(default=None, description="客户ID（仓库终点为None）")
     customer_name: str = Field(..., description="客户名称")
     lat: float = Field(..., description="纬度")
     lon: float = Field(..., description="经度")

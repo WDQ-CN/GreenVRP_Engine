@@ -33,11 +33,11 @@ class SecurityConfig:
     )
 
     # JWT 配置（如果使用 JWT）
-    _JWT_DEFAULT = "change-this-secret-key-in-production-min-32-chars"
-    _jwt_secret_key: str = os.getenv("JWT_SECRET_KEY", _JWT_DEFAULT)
-    
+    JWT_DEFAULT_SECRET = "change-this-secret-key-in-production-min-32-chars"
+    _jwt_secret_key: str = os.getenv("JWT_SECRET_KEY", JWT_DEFAULT_SECRET)
+
     # 生产环境禁止使用默认密钥
-    if _jwt_secret_key == _JWT_DEFAULT:
+    if _jwt_secret_key == JWT_DEFAULT_SECRET:
         if os.getenv("GREENVRP_ENV", "development") == "production":
             raise RuntimeError(
                 "生产环境必须设置 JWT_SECRET_KEY 环境变量！"
@@ -49,6 +49,7 @@ class SecurityConfig:
     JWT_SECRET_KEY: str = _jwt_secret_key
     JWT_ALGORITHM: str = "HS256"
     JWT_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("JWT_TOKEN_EXPIRE_MINUTES", "60"))
+    JWT_MIN_SECRET_LENGTH: int = 32
 
     # CORS 配置 - 生产环境必须修改为实际的前端域名
     _allowed_origins_raw = os.getenv(
@@ -257,6 +258,26 @@ class SecurityConfig:
         if not re.match(r'^[a-zA-Z0-9_-]+$', api_key):
             return False, "API Key 只能包含字母、数字、下划线和连字符"
         
+        return True, ""
+
+    def validate_jwt_key(self) -> tuple[bool, str]:
+        """
+        验证 JWT 密钥配置是否安全。
+
+        Returns:
+            (是否有效，错误消息)
+        """
+        if not self.JWT_SECRET_KEY:
+            return False, "JWT_SECRET_KEY 未配置"
+        if len(self.JWT_SECRET_KEY) < self.JWT_MIN_SECRET_LENGTH:
+            return False, (
+                f"JWT_SECRET_KEY 长度不足（当前 {len(self.JWT_SECRET_KEY)} 字符，"
+                f"至少需要 {self.JWT_MIN_SECRET_LENGTH} 字符）"
+            )
+        if self.JWT_SECRET_KEY == self.JWT_DEFAULT_SECRET:
+            return False, "正在使用默认 JWT 密钥，生产环境必须修改"
+        if self.JWT_SECRET_KEY.startswith("your-secret"):
+            return False, "JWT_SECRET_KEY 使用了示例密钥前缀 'your-secret'"
         return True, ""
 
     @classmethod

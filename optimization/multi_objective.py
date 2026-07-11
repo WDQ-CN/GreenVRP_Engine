@@ -5,6 +5,7 @@
 生成 Pareto 前沿供决策者权衡选择。
 """
 
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -12,6 +13,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+
+from exceptions.errors import ConfigurationError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -169,7 +174,7 @@ class MultiObjectiveOptimizer:
         elif method == "epsilon_constraint":
             return self._optimize_epsilon_constraint(weights, time_limit)
         else:
-            raise ValueError(f"未知优化方法: {method}")
+            raise ConfigurationError(f"未知优化方法: {method}", config_key="method")
 
     def _optimize_weighted_sum(
         self,
@@ -242,6 +247,54 @@ class MultiObjectiveOptimizer:
 
         return result
 
+    def _solve_pareto_parallel(
+        self,
+        weight_combinations: List[ObjectiveWeights],
+        time_limit_per_point: int,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, float]]]:
+        """并行求解所有权重组合。"""
+        solutions: List[Dict[str, Any]] = []
+        objective_values: List[Dict[str, float]] = []
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {
+                executor.submit(
+                    self._solve_with_weights, weights, time_limit_per_point
+                ): weights
+                for weights in weight_combinations
+            }
+
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    if result.get("solution_status") == "SUCCESS":
+                        solutions.append(result)
+                        objective_values.append(self._extract_objectives(result))
+                except Exception as e:
+                    logger.error("Pareto 并行求解失败: %s", str(e)[:200])
+
+        return solutions, objective_values
+
+    def _solve_pareto_serial(
+        self,
+        weight_combinations: List[ObjectiveWeights],
+        time_limit_per_point: int,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, float]]]:
+        """串行求解所有权重组合。"""
+        solutions: List[Dict[str, Any]] = []
+        objective_values: List[Dict[str, float]] = []
+
+        for weights in weight_combinations:
+            try:
+                result = self._solve_with_weights(weights, time_limit_per_point)
+                if result.get("solution_status") == "SUCCESS":
+                    solutions.append(result)
+                    objective_values.append(self._extract_objectives(result))
+            except Exception as e:
+                logger.error("Pareto 串行求解失败: %s", str(e)[:200])
+
+        return solutions, objective_values
+
     def generate_pareto_front(
         self,
         num_points: int = 20,
@@ -264,37 +317,15 @@ class MultiObjectiveOptimizer:
         # 生成权重组合
         weight_combinations = self._generate_weight_grid(num_points)
 
-        solutions = []
-        objective_values = []
-
+        # 求解所有权重组合
         if parallel:
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = {
-                    executor.submit(
-                        self._solve_with_weights,
-                        weights,
-                        time_limit_per_point,
-                    ): weights
-                    for weights in weight_combinations
-                }
-
-                for future in as_completed(futures):
-                    try:
-                        result = future.result()
-                        if result.get("solution_status") == "SUCCESS":
-                            solutions.append(result)
-                            objective_values.append(self._extract_objectives(result))
-                    except Exception as e:
-                        print(f"求解失败: {e}")
+            solutions, objective_values = self._solve_pareto_parallel(
+                weight_combinations, time_limit_per_point,
+            )
         else:
-            for weights in weight_combinations:
-                try:
-                    result = self._solve_with_weights(weights, time_limit_per_point)
-                    if result.get("solution_status") == "SUCCESS":
-                        solutions.append(result)
-                        objective_values.append(self._extract_objectives(result))
-                except Exception as e:
-                    print(f"求解失败: {e}")
+            solutions, objective_values = self._solve_pareto_serial(
+                weight_combinations, time_limit_per_point,
+            )
 
         if not solutions:
             return self._create_empty_pareto_result()

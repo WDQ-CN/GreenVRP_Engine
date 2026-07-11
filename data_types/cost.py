@@ -5,7 +5,24 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict
+from typing import Any, Dict, Optional, TypedDict
+
+
+class CostDict(TypedDict, total=False):
+    """成本计算结果字典结构（对应 calculate_green_cost 返回值）。"""
+    transport_cost: float
+    labor_cost: float
+    fixed_cost: float
+    penalty_cost: float
+    carbon_cost: float
+    total_cost: float
+    carbon_emission_kg: float
+    total_distance_km: float
+    total_time_min: float
+    driving_time_min: float
+    service_time_min: float
+    waiting_time_min: float
+    cost_breakdown: Dict[str, float]
 
 
 @dataclass

@@ -1,0 +1,33 @@
+# GreenVRP Engine — Caddy 反向代理配置
+# 使用方法：
+#   1. 将域名替换为实际域名
+#   2. 确保 API 服务运行在 localhost:8000
+#   3. 运行: caddy run --config Caddyfile
+
+greenvrp.example.com {
+    # 反向代理到 FastAPI 后端
+    reverse_proxy localhost:8000
+
+    # 启用 Gzip 压缩
+    encode gzip
+
+    # 安全响应头
+    header {
+        # HSTS (HTTP Strict Transport Security)
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        # 防止 MIME 类型嗅探
+        X-Content-Type-Options "nosniff"
+        # 防止点击劫持
+        X-Frame-Options "DENY"
+    }
+
+    # 访问日志
+    log {
+        output file /var/log/caddy/greenvrp.log
+    }
+
+    # 限制请求体大小（100MB，适配大型客户数据上传）
+    request_body /api/v1/solve* {
+        max_size 100MB
+    }
+}

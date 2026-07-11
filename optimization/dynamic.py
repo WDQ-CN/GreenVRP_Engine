@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from utils.geo import haversine_distance
+from exceptions.errors import SolverError
 
 
 class EventType(Enum):
@@ -381,6 +382,76 @@ class DynamicReoptimizer:
         # 需要完全重优化
         return self._full_reoptimize(f"车辆 {vehicle_id} 故障触发完全重优化")
 
+    def _find_best_insertion(
+        self,
+        routes: List[Dict[str, Any]],
+        new_customer: Dict[str, Any],
+    ) -> Tuple[int, int, float]:
+        """
+        找到插入新客户的最佳路线和位置（最小成本增量）。
+
+        Returns:
+            (best_route_idx, best_insert_pos, min_cost_increase)
+        """
+        best_route_idx = -1
+        best_insert_pos = -1
+        min_cost_increase = float("inf")
+        new_demand = new_customer.get("demand", 0)
+
+        for route_idx, route in enumerate(routes):
+            # 检查容量约束
+            remaining_capacity = route.get("capacity", 0) - route.get("total_demand", 0)
+            if remaining_capacity < new_demand:
+                continue
+
+            position, cost = self._find_best_position_in_route(route, new_customer)
+            if position >= 0 and cost < min_cost_increase:
+                min_cost_increase = cost
+                best_route_idx = route_idx
+                best_insert_pos = position
+
+        return best_route_idx, best_insert_pos, min_cost_increase
+
+    def _find_best_position_in_route(
+        self,
+        route: Dict[str, Any],
+        new_customer: Dict[str, Any],
+    ) -> Tuple[int, float]:
+        """
+        在单条路线中找到最佳插入位置。
+
+        Returns:
+            (best_position, min_cost_increase)
+        """
+        best_pos = -1
+        min_cost = float("inf")
+        stops = route.get("stops", [])
+        new_lat = new_customer.get("lat", 0)
+        new_lon = new_customer.get("lon", 0)
+
+        for pos in range(1, len(stops)):
+            prev_stop = stops[pos - 1]
+            next_stop = stops[pos]
+
+            prev_lat = prev_stop.get("lat", 0)
+            prev_lon = prev_stop.get("lon", 0)
+            next_lat = next_stop.get("lat", 0)
+            next_lon = next_stop.get("lon", 0)
+
+            # 增量距离
+            old_dist = haversine_distance(prev_lat, prev_lon, next_lat, next_lon)
+            new_dist = (
+                haversine_distance(prev_lat, prev_lon, new_lat, new_lon)
+                + haversine_distance(new_lat, new_lon, next_lat, next_lon)
+            )
+            cost_increase = new_dist - old_dist
+
+            if cost_increase < min_cost:
+                min_cost = cost_increase
+                best_pos = pos
+
+        return best_pos, min_cost
+
     def _insert_customer(
         self,
         new_customer: Dict[str, Any],
@@ -391,49 +462,10 @@ class DynamicReoptimizer:
         找到使总成本增加最少的插入位置。
         """
         routes = self.current_solution.get("routes", [])
-        best_route_idx = -1
-        best_insert_pos = -1
-        min_cost_increase = float("inf")
 
-        # 计算新客户的成本参数
-        new_demand = new_customer.get("demand", 0)
-
-        changes = []
-
-        for route_idx, route in enumerate(routes):
-            # 检查容量约束
-            remaining_capacity = route.get("capacity", 0) - route.get("total_demand", 0)
-
-            if remaining_capacity < new_demand:
-                continue
-
-            # 尝试各插入位置
-            stops = route.get("stops", [])
-            for pos in range(1, len(stops)):
-                # 计算插入成本（简化：使用距离增量）
-                prev_stop = stops[pos - 1]
-                next_stop = stops[pos]
-
-                # 简化距离计算
-                new_lat = new_customer.get("lat", 0)
-                new_lon = new_customer.get("lon", 0)
-                prev_lat = prev_stop.get("lat", 0)
-                prev_lon = prev_stop.get("lon", 0)
-                next_lat = next_stop.get("lat", 0)
-                next_lon = next_stop.get("lon", 0)
-
-                # 增量距离
-                old_dist = haversine_distance(prev_lat, prev_lon, next_lat, next_lon)
-                new_dist = haversine_distance(
-                    prev_lat, prev_lon, new_lat, new_lon
-                ) + haversine_distance(new_lat, new_lon, next_lat, next_lon)
-
-                cost_increase = new_dist - old_dist
-
-                if cost_increase < min_cost_increase:
-                    min_cost_increase = cost_increase
-                    best_route_idx = route_idx
-                    best_insert_pos = pos
+        best_route_idx, best_insert_pos, min_cost_increase = self._find_best_insertion(
+            routes, new_customer,
+        )
 
         if best_route_idx < 0:
             # 无法插入现有路线，需要新增路线
@@ -445,14 +477,14 @@ class DynamicReoptimizer:
         old_cost = self.current_solution.get("cost_data", {}).get("total_cost", 0)
         new_cost = new_solution.get("cost_data", {}).get("total_cost", 0)
 
-        changes.append(
+        changes = [
             {
                 "type": "insert",
                 "route": best_route_idx,
                 "position": best_insert_pos,
                 "customer_id": new_customer.get("id"),
             }
-        )
+        ]
 
         return ReoptimizationResult(
             success=True,
@@ -675,7 +707,7 @@ class DynamicReoptimizer:
         lat = new_customer.get("lat")
         lon = new_customer.get("lon")
         if lat is None or lon is None:
-            raise ValueError(f"客户 {new_customer.get('id')} 缺少坐标信息")
+            raise SolverError(f"客户 {new_customer.get('id')} 缺少坐标信息")
 
         new_stop = {
             "node": node_id,  # 使用唯一节点ID

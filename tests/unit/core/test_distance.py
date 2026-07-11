@@ -14,6 +14,7 @@ from core.distance import (
     build_time_matrix_numpy,
     haversine_vectorized,
 )
+from exceptions.errors import DistanceCalculationError
 from utils.geo import haversine_distance
 
 
@@ -105,7 +106,7 @@ class TestBuildTimeMatrix:
         assert m[0][1] == 60
 
     def test_invalid_speed(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(DistanceCalculationError):
             build_time_matrix([[0]], 0.0)
 
     def test_symmetry(self):
@@ -120,7 +121,7 @@ class TestBuildTimeMatrixNumpy:
         assert t[0][1] == 60
 
     def test_invalid_speed(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(DistanceCalculationError):
             build_time_matrix_numpy(np.array([[0.0]]), 0.0)
 
 

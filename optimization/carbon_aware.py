@@ -15,6 +15,7 @@ import pandas as pd
 
 from config.constants import DIESEL_CO2_FACTOR, VEHICLE_CARBON_BASELINE
 from core.cost import calculate_green_cost
+from exceptions.errors import ConfigurationError
 
 
 @dataclass
@@ -185,7 +186,7 @@ class CarbonAwareOptimizer:
         elif method == "hierarchical":
             return self._optimize_hierarchical(carbon_target, time_limit)
         else:
-            raise ValueError(f"未知优化方法: {method}")
+            raise ConfigurationError(f"未知优化方法: {method}", config_key="method")
 
     def _optimize_weighted(
         self,

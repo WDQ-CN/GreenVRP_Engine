@@ -118,7 +118,7 @@ async def solve_async(
                 )
 
         # 创建异步任务
-        job_id = solver_service.solve_async(
+        job_id = await solver_service.solve_async(
             customers=customers,
             vehicle_config=vehicle_config,
             params=params,

@@ -9,11 +9,20 @@ Redis 任务管理器（生产环境版）
 """
 
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import redis
+
+logger = logging.getLogger(__name__)
+
+
+def _redact_redis_url(url: str) -> str:
+    """脱敏 Redis URL 中的密码信息。"""
+    import re
+    return re.sub(r'(redis://[^:]+:)[^@]+(@)', r'\1****\2', url)
 
 
 class RedisJobManager:
@@ -53,9 +62,9 @@ class RedisJobManager:
         # 测试连接
         try:
             self.redis.ping()
-            print(f"✓ Redis 连接成功：{redis_url}")
+            logger.info(f"Redis 连接成功：{_redact_redis_url(redis_url)}")
         except redis.ConnectionError as e:
-            print(f"✗ Redis 连接失败：{e}")
+            logger.error(f"Redis 连接失败：{e}")
             raise
 
     def create_job(self) -> str:
@@ -253,7 +262,7 @@ class MemoryJobManagerFallback:
     
     def __init__(self):
         self._jobs: Dict[str, Dict[str, Any]] = {}
-        print("⚠ 使用内存版任务管理器（开发模式）")
+        logger.warning("使用内存版任务管理器（开发模式）")
 
     def create_job(self) -> str:
         job_id = str(uuid.uuid4())
@@ -314,7 +323,7 @@ def create_job_manager(
         return RedisJobManager(redis_url=redis_url)
     except redis.ConnectionError:
         if use_fallback:
-            print("⚠ Redis 不可用，降级到内存版任务管理器")
+            logger.warning("Redis 不可用，降级到内存版任务管理器")
             return MemoryJobManagerFallback()
         else:
             raise

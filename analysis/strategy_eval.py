@@ -6,8 +6,11 @@
 
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 import pandas as pd
@@ -225,14 +228,14 @@ class StrategyEvaluator:
                                 result = future.result()
                                 run_results.append(result)
                             except Exception as e:
-                                print(f"运行失败: {e}")
+                                logger.error(f"运行失败: {e}")
                 else:
                     for run in range(num_runs):
                         try:
                             result = self._run_single_evaluation(strategy, time_limit, run)
                             run_results.append(result)
                         except Exception as e:
-                            print(f"运行失败 (策略 {strategy}, 时间 {time_limit}): {e}")
+                            logger.error(f"运行失败 (策略 {strategy}, 时间 {time_limit}): {e}")
 
                 # 汇总多次运行结果
                 if run_results:

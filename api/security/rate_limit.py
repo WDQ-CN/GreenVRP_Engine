@@ -35,6 +35,20 @@ def get_rate_limit_key(request: Request) -> str:
     return f"ip:{get_remote_address(request)}"
 
 
+def get_rate_limit_key_redacted(request: Request) -> str:
+    """
+    获取脱敏后的速率限制键值（用于日志记录）。
+    
+    将 API Key 截断为前 8 位 + "...”，避免敏感信息泄露。
+    """
+    api_key = request.headers.get("X-API-Key")
+    if api_key and api_key.strip():
+        key = api_key.strip()
+        truncated = key[:8] + "..." if len(key) > 8 else key
+        return f"apikey:{truncated}"
+    return f"ip:{get_remote_address(request)}"
+
+
 # 创建速率限制器
 limiter = Limiter(key_func=get_rate_limit_key)
 
@@ -49,7 +63,7 @@ async def rate_limit_exceeded_handler(
     记录日志并返回友好的错误信息。
     """
     logger.warning(
-        f"Rate limit exceeded for {get_rate_limit_key(request)} "
+        f"Rate limit exceeded for {get_rate_limit_key_redacted(request)} "
         f"on path {request.url.path}"
     )
     

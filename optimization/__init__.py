@@ -1,7 +1,7 @@
 """
 高级优化模块
 
-提供多目标优化、动态需求响应、碳感知路由等高级优化功能。
+提供多目标优化、动态需求响应、碳感知路由、2-opt 后处理等高级优化功能。
 """
 
 from .carbon_aware import (
@@ -18,6 +18,13 @@ from .multi_objective import (
     ObjectiveWeights,
     ParetoFrontResult,
 )
+from .route_optimize import (
+    exchange_between_routes,
+    optimize_single_route,
+    post_process_solution,
+    relocate_between_routes,
+    two_opt_swap,
+)
 
 __all__ = [
     "MultiObjectiveOptimizer",
@@ -28,4 +35,9 @@ __all__ = [
     "DynamicEvent",
     "CarbonAwareOptimizer",
     "CarbonEfficiencyReport",
+    "two_opt_swap",
+    "optimize_single_route",
+    "post_process_solution",
+    "relocate_between_routes",
+    "exchange_between_routes",
 ]

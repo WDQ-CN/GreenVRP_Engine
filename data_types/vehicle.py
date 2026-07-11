@@ -54,7 +54,7 @@ class VehicleConfig:
     """
 
     vehicle_type: str
-    capacity: float
+    capacity: int
     fixed_cost: float
     fuel_per_100km: float
     speed_kmh: float
@@ -78,7 +78,7 @@ class VehicleConfig:
         """从字典创建实例。"""
         return cls(
             vehicle_type=data.get("vehicle_type", "unknown"),
-            capacity=data.get("capacity", 800),
+            capacity=int(data.get("capacity", 800)),
             fixed_cost=data.get("fixed_cost", 200),
             fuel_per_100km=data.get("fuel_per_100km", 12),
             speed_kmh=data.get("speed_kmh", 40),

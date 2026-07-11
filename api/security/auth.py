@@ -150,19 +150,15 @@ def create_access_token(
 
     to_encode.update({"exp": expire, "iat": datetime.now(timezone.utc)})
 
-    # 验证密钥配置
-    _DEFAULT_JWT_SECRET = "change-this-secret-key-in-production-min-32-chars"
-    if (
-        not security_config.JWT_SECRET_KEY
-        or security_config.JWT_SECRET_KEY == _DEFAULT_JWT_SECRET
-        or security_config.JWT_SECRET_KEY.startswith("your-secret")
-    ):
+    # 验证密钥配置（使用 SecurityConfig 统一校验）
+    is_valid, msg = security_config.validate_jwt_key()
+    if not is_valid:
         if security_config.ENV == "production":
             raise ValueError(
                 "生产环境禁止使用默认 JWT 密钥！"
                 "请通过 JWT_SECRET_KEY 环境变量设置。"
             )
-        logger.warning("使用默认 JWT 密钥，生产环境必须修改！")
+        logger.warning("JWT 密钥安全警告：%s", msg)
 
     encoded_jwt = jwt.encode(
         to_encode,
@@ -171,6 +167,85 @@ def create_access_token(
     )
 
     return encoded_jwt
+
+
+def _reject_default_key_token(token: str) -> None:
+    """
+    拒绝使用默认 JWT 密钥签发的 token。
+
+    当服务器已配置自定义密钥时，检查传入 token 是否仍使用默认密钥签发。
+    如果是，则拒绝该 token（防止开发环境默认密钥签发的 token 流入生产）。
+
+    Args:
+        token: JWT token 字符串
+
+    Raises:
+        HTTPException: 当 token 使用默认密钥签发时
+    """
+    # 如果当前密钥就是默认密钥，则跳过检查
+    if security_config.JWT_SECRET_KEY == security_config.JWT_DEFAULT_SECRET:
+        return
+    try:
+        # 尝试用默认密钥解码
+        jwt.decode(
+            token,
+            security_config.JWT_DEFAULT_SECRET,
+            algorithms=[security_config.JWT_ALGORITHM],
+        )
+        # 解码成功说明 token 是用默认密钥签发的，拒绝
+        logger.warning("检测到使用默认密钥签发的 token，已拒绝")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效的认证凭证（token 使用已废弃的密钥签发）",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except (JWTError, ExpiredSignatureError):
+        # 默认密钥无法解码，说明 token 使用的是配置密钥，正常放行
+        pass
+
+
+def _payload_to_token_data(payload: dict) -> Optional[TokenData]:
+    """
+    将 JWT payload 解析为 TokenData，并记录审计日志。
+
+    Args:
+        payload: JWT 解码后的 payload
+
+    Returns:
+        TokenData 或 None（缺少必要字段时）
+    """
+    username: str = payload.get("sub")
+    api_key: str = payload.get("api_key")
+    scopes: list = payload.get("scopes", [])
+    exp_timestamp: int = payload.get("exp")
+
+    exp_datetime = None
+    if exp_timestamp:
+        exp_datetime = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
+
+    if username is None and api_key is None:
+        _log_audit(
+            action="jwt_auth",
+            user_type="jwt",
+            identifier="unknown",
+            success=False,
+            reason="missing_subject",
+        )
+        return None
+
+    _log_audit(
+        action="jwt_auth",
+        user_type="jwt",
+        identifier=username or api_key[:8] + "...",
+        success=True,
+    )
+
+    return TokenData(
+        username=username,
+        api_key=api_key,
+        scopes=scopes,
+        exp=exp_datetime,
+    )
 
 
 def verify_token(token: str = Security(oauth2_scheme)) -> Optional[TokenData]:
@@ -190,44 +265,16 @@ def verify_token(token: str = Security(oauth2_scheme)) -> Optional[TokenData]:
         return None
 
     try:
+        # 检查 token 是否使用默认密钥签发（当配置密钥已修改时）
+        _reject_default_key_token(token)
+
         payload = jwt.decode(
             token,
             security_config.JWT_SECRET_KEY,
             algorithms=[security_config.JWT_ALGORITHM],
         )
 
-        username: str = payload.get("sub")
-        api_key: str = payload.get("api_key")
-        scopes: list = payload.get("scopes", [])
-        exp_timestamp: int = payload.get("exp")
-        
-        exp_datetime = None
-        if exp_timestamp:
-            exp_datetime = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
-
-        if username is None and api_key is None:
-            _log_audit(
-                action="jwt_auth",
-                user_type="jwt",
-                identifier="unknown",
-                success=False,
-                reason="missing_subject",
-            )
-            return None
-
-        _log_audit(
-            action="jwt_auth",
-            user_type="jwt",
-            identifier=username or api_key[:8] + "...",
-            success=True,
-        )
-
-        return TokenData(
-            username=username, 
-            api_key=api_key, 
-            scopes=scopes,
-            exp=exp_datetime
-        )
+        return _payload_to_token_data(payload)
 
     except ExpiredSignatureError:
         _log_audit(
@@ -257,6 +304,42 @@ def verify_token(token: str = Security(oauth2_scheme)) -> Optional[TokenData]:
         )
 
 
+def _build_user_info(
+    api_key: Optional[str],
+    token_data: Optional[TokenData],
+    client_ip: str,
+) -> dict:
+    """
+    构建用户信息字典（统一用于 get_current_user 和 get_optional_user）。
+
+    Args:
+        api_key: API Key（已脱敏）
+        token_data: JWT Token 数据
+        client_ip: 客户端 IP
+
+    Returns:
+        用户信息字典
+    """
+    if api_key:
+        return {
+            "type": "api_key",
+            "key": api_key[:8] + "...",  # 脱敏显示
+            "ip": client_ip,
+        }
+
+    if token_data:
+        return {
+            "type": "jwt",
+            "username": token_data.username,
+            "api_key": token_data.api_key[:8] + "..." if token_data.api_key else None,
+            "scopes": token_data.scopes,
+            "exp": token_data.exp,
+            "ip": client_ip,
+        }
+
+    return {}
+
+
 async def get_current_user(
     request: Request,
     api_key: Optional[str] = Depends(verify_api_key),
@@ -281,25 +364,10 @@ async def get_current_user(
         HTTPException: 认证失败
     """
     client_ip = request.client.host if request.client else "unknown"
-    
-    # 优先使用 API Key 认证
-    if api_key:
-        return {
-            "type": "api_key", 
-            "key": api_key[:8] + "...",  # 脱敏显示
-            "ip": client_ip
-        }
+    user_info = _build_user_info(api_key, token_data, client_ip)
 
-    # 其次使用 JWT 认证
-    if token_data:
-        return {
-            "type": "jwt",
-            "username": token_data.username,
-            "api_key": token_data.api_key[:8] + "..." if token_data.api_key else None,
-            "scopes": token_data.scopes,
-            "exp": token_data.exp,
-            "ip": client_ip
-        }
+    if user_info:
+        return user_info
 
     # 两种认证都失败
     _log_audit(
@@ -329,21 +397,5 @@ async def get_optional_user(
     用于部分公开、部分受限的端点。
     """
     client_ip = request.client.host if request.client else "unknown"
-    
-    if api_key:
-        return {
-            "type": "api_key", 
-            "key": api_key[:8] + "...",
-            "ip": client_ip
-        }
-
-    if token_data:
-        return {
-            "type": "jwt",
-            "username": token_data.username,
-            "api_key": token_data.api_key[:8] + "..." if token_data.api_key else None,
-            "scopes": token_data.scopes,
-            "ip": client_ip
-        }
-
-    return None
+    user_info = _build_user_info(api_key, token_data, client_ip)
+    return user_info if user_info else None

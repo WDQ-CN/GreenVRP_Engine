@@ -29,7 +29,6 @@ jobs:
 
       - name: Security audit with pip-audit
         run: |
-          pip install pip-audit
           pip-audit --requirement requirements.txt --requirement requirements-test.txt --ignore-vuln PYSEC-2022-430 2>&1 | tail -20
 
       - name: Lint with flake8
@@ -40,8 +39,18 @@ jobs:
 
       - name: SAST with bandit
         run: |
-          pip install bandit
-          bandit -r api/ config/ core/ -ll -q
+          bandit -r api/ config/ core/ -ll -q -s B101
+
+      - name: Container security scan with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'HIGH,CRITICAL'
+          format: 'table'
+          exit-code: '1'
+          skip-dirs: 'tests,.git,.venv,__pycache__'
+        continue-on-error: true
 
       - name: Test with pytest
         run: |

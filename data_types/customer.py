@@ -27,11 +27,11 @@ class Customer:
     id: int
     lat: float
     lon: float
-    demand: float = 0.0
+    demand: int = 0
     name: Optional[str] = None
-    service_time_min: float = 0.0
-    tw_earliest: Optional[float] = None
-    tw_latest: Optional[float] = None
+    service_time_min: int = 0
+    tw_earliest: Optional[int] = None
+    tw_latest: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
@@ -58,7 +58,7 @@ class Customer:
             id=data["id"],
             lat=data["lat"],
             lon=data["lon"],
-            demand=data.get("demand", 0.0),
+            demand=int(data.get("demand", 0)),
             name=data.get("name"),
             service_time_min=data.get("service_time_min", 0.0),
             tw_earliest=data.get("tw_earliest"),

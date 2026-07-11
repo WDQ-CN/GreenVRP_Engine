@@ -24,7 +24,9 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import numpy as np
 
+from data_types.cost import CostDict
 from config.constants import DIESEL_CO2_FACTOR
+from exceptions.errors import CostCalculationError, ValidationError
 
 # 默认碳交易价格（元/kg）
 DEFAULT_CARBON_PRICE: float = 0.08
@@ -61,12 +63,27 @@ def _build_vehicle_params(
     """
     params = {}
     for v_type, config in vehicle_config.items():
+        if not isinstance(config, dict):
+            continue  # 跳过无效配置
         fuel_per_100km = config.get("fuel_per_100km", 12)
+        fixed_cost = config.get("fixed_cost", 0)
+        speed_kmh = config.get("speed_kmh", 40)
+
+        # 类型安全检查：确保数值类型
+        try:
+            fuel_per_100km = float(fuel_per_100km)
+            fixed_cost = float(fixed_cost)
+            speed_kmh = float(speed_kmh)
+        except (TypeError, ValueError):
+            fuel_per_100km = 12.0
+            fixed_cost = 0.0
+            speed_kmh = 40.0
+
         params[v_type] = VehicleCostParams(
             vehicle_type=v_type,
-            fixed_cost=config.get("fixed_cost", 0),
+            fixed_cost=fixed_cost,
             fuel_per_100km=fuel_per_100km,
-            speed_kmh=config.get("speed_kmh", 40),
+            speed_kmh=speed_kmh,
             fuel_coefficient=fuel_per_100km / 100.0,
             carbon_coefficient=fuel_per_100km / 100.0 * DIESEL_CO2_FACTOR,
         )
@@ -170,141 +187,92 @@ def _calculate_waiting_time_vectorized(stops: List[Dict[str, Any]]) -> float:
     return float(np.sum(waiting_times))
 
 
-def calculate_green_cost(
-    solution: Dict[str, Any],
-    vehicle_config: Dict[str, Dict[str, Any]],
-    params: Dict[str, float],
-) -> Dict[str, Any]:
-    """
-    计算五维绿色成本（性能优化版 v2）。
-
-    使用 NumPy 向量化计算，显著提升大规模数据的处理速度。
-
-    Args:
-        solution: 求解器返回的解，包含 routes, vehicles_used, total_late_minutes 等
-        vehicle_config: 车型配置字典
-        params: 全局参数字典，包含：
-            - fuel_price: 油价（元/升）
-            - hourly_wage: 时薪（元/小时）
-            - carbon_price: 碳交易价格（元/kg）
-            - late_penalty_per_min: 迟到罚金（元/分钟）
-
-    Returns:
-        成本明细字典，包含五维成本及碳排放量：
-        - transport_cost: 运输变动成本（元）
-        - labor_cost: 人工时间成本（元）
-        - fixed_cost: 车辆固定成本（元）
-        - penalty_cost: 违约惩罚成本（元）
-        - carbon_cost: 碳排放环境成本（元）
-        - total_cost: 总成本（元）
-        - carbon_emission_kg: 碳排放量（kg）
-        - total_distance_km: 总行驶距离（公里）
-
-    Note:
-        五维成本模型详解：
-
-        1. 运输变动成本 = Σ(距离/100 × 车型油耗 × 油价)
-           - 直接与行驶距离成正比
-           - 大车油耗高但载重效率高，单位货物运费可能更低
-
-        2. 人工时间成本 = Σ((行驶时间 + 卸货时间 + 等待时间) / 60 × 时薪)
-           - 包含所有司机工作时间
-           - 等待时间：早到需等待客户开门
-
-        3. 车辆固定成本 = Σ(派发该车型数量 × 该车型发车费)
-           - 包括折旧、保险、年检等固定成本
-           - 大车固定成本高但单件分摊少
-
-        4. 违约惩罚成本 = Σ(总迟到分钟数 × 罚金)
-           - 迟到影响客户满意度
-           - 软时间窗允许迟到但产生惩罚
-
-        5. 碳排放成本 = Σ(距离/100 × 油耗 × 2.63kg/L × 碳价)
-           - 碳排放内部化，体现 ESG 责任
-           - 引导企业选择更环保的运输方案
-    """
-    # 提取参数
-    fuel_price = params.get("fuel_price", 7.5)
-    hourly_wage = params.get("hourly_wage", 50.0)
-    carbon_price = params.get("carbon_price", DEFAULT_CARBON_PRICE)
-    late_penalty = params.get("late_penalty_per_min", 10.0)
-
-    # 使用缓存的车型参数
-    vehicle_params = _get_vehicle_params_cached(vehicle_config)
-
-    # 初始化成本
+def _calc_route_transport_costs(
+    routes: List[Dict[str, Any]],
+    vehicle_params: Dict[str, VehicleCostParams],
+    fuel_price: float,
+) -> tuple:
+    """计算运输变动成本和碳排放（单路线循环）。"""
     transport_cost = 0.0
-    labor_cost = 0.0
-    fixed_cost = 0.0
-    penalty_cost = 0.0
     carbon_emission_kg = 0.0
-
-    # 总时间统计
     total_driving_time_min = 0.0
     total_service_time_min = 0.0
     total_waiting_time_min = 0.0
 
-    routes = solution.get("routes", [])
-    vehicles_used = solution.get("vehicles_used", {})
-
-    # ========== 1. 批量计算运输变动成本和碳排放 ==========
     for route in routes:
-        v_type = route.get("vehicle_type")  # 修复：使用get避免KeyError
-        if v_type is None:
+        if not isinstance(route, dict):
+            continue  # 跳过无效路线
+        v_type = route.get("vehicle_type")
+        if not v_type or not isinstance(v_type, str):
             continue
         v_params = vehicle_params.get(v_type)
-
         if v_params is None:
             continue
 
         distance_km = route.get("distance_km", 0)
+        try:
+            distance_km = float(distance_km)
+        except (TypeError, ValueError):
+            distance_km = 0.0
 
-        # 运输变动成本 = 距离 × 油耗系数 × 油价
         fuel_consumed = distance_km * v_params.fuel_coefficient
         transport_cost += fuel_consumed * fuel_price
-
-        # 碳排放 = 油耗 × 2.63 kg CO2/升
         carbon_emission_kg += distance_km * v_params.carbon_coefficient
 
-        # 行驶时间 = 距离 / 速度 × 60
-        driving_time = (distance_km / v_params.speed_kmh) * 60
+        driving_time = (distance_km / max(v_params.speed_kmh, 0.1)) * 60
         total_driving_time_min += driving_time
 
-        # 批量处理站点数据
-        stops = route.get("stops", [])
-
-        # 使用列表推导式提取服务时间（修复：使用正确的字段名）
+        stops = route.get("stops")
+        if not isinstance(stops, (list, tuple)):
+            continue
         service_times = [
             s.get("service_time_min", s.get("service_time", 0))
-            for s in stops
-            if s.get("node", 0) > 0
+            for s in stops if isinstance(s, dict) and s.get("node", 0) > 0
         ]
         total_service_time_min += sum(service_times)
-
-        # 向量化计算等待时间
         total_waiting_time_min += _calculate_waiting_time_vectorized(stops)
 
-    # ========== 2. 计算人工时间成本 ==========
-    total_time_min = total_driving_time_min + total_service_time_min + total_waiting_time_min
-    labor_cost = (total_time_min / 60) * hourly_wage
+    return transport_cost, carbon_emission_kg, total_driving_time_min, total_service_time_min, total_waiting_time_min
 
-    # ========== 3. 计算车辆固定成本（向量化）==========
-    fixed_cost = sum(
+
+def _calc_labor_cost(
+    driving_time: float, service_time: float, waiting_time: float, hourly_wage: float
+) -> float:
+    """计算人工时间成本。"""
+    total_time = driving_time + service_time + waiting_time
+    return (total_time / 60) * hourly_wage
+
+
+def _calc_fixed_cost(
+    vehicles_used: Dict[str, int],
+    vehicle_params: Dict[str, VehicleCostParams],
+) -> float:
+    """计算车辆固定成本。"""
+    return sum(
         count * vehicle_params[v_type].fixed_cost
         for v_type, count in vehicles_used.items()
         if v_type in vehicle_params
     )
 
-    # ========== 4. 计算违约惩罚成本 ==========
-    total_late_minutes = solution.get("total_late_minutes", 0)
-    penalty_cost = total_late_minutes * late_penalty
 
-    # ========== 5. 计算碳排放成本 ==========
-    carbon_cost = carbon_emission_kg * carbon_price
+def _calc_penalty_cost(solution: Dict[str, Any], late_penalty: float) -> float:
+    """计算违约惩罚成本。"""
+    return solution.get("total_late_minutes", 0) * late_penalty
 
-    # 总成本
-    total_cost = transport_cost + labor_cost + fixed_cost + penalty_cost + carbon_cost
 
+def _calc_carbon_cost(carbon_emission_kg: float, carbon_price: float) -> float:
+    """计算碳排放成本。"""
+    return carbon_emission_kg * carbon_price
+
+
+def _build_cost_result(
+    transport_cost: float, labor_cost: float, fixed_cost: float,
+    penalty_cost: float, carbon_cost: float, carbon_emission_kg: float,
+    total_driving_time_min: float, total_service_time_min: float,
+    total_waiting_time_min: float, total_distance: float,
+    total_cost: float,
+) -> CostDict:
+    """构建成本结果字典。"""
     return {
         "transport_cost": round(transport_cost, 2),
         "labor_cost": round(labor_cost, 2),
@@ -313,8 +281,8 @@ def calculate_green_cost(
         "carbon_cost": round(carbon_cost, 2),
         "total_cost": round(total_cost, 2),
         "carbon_emission_kg": round(carbon_emission_kg, 2),
-        "total_distance_km": solution.get("total_distance", 0),
-        "total_time_min": round(total_time_min, 1),
+        "total_distance_km": total_distance,
+        "total_time_min": round(total_driving_time_min + total_service_time_min + total_waiting_time_min, 1),
         "driving_time_min": round(total_driving_time_min, 1),
         "service_time_min": round(total_service_time_min, 1),
         "waiting_time_min": round(total_waiting_time_min, 1),
@@ -326,6 +294,95 @@ def calculate_green_cost(
             "碳排放成本": round(carbon_cost, 2),
         },
     }
+
+
+def calculate_green_cost(
+    solution: Dict[str, Any],
+    vehicle_config: Dict[str, Dict[str, Any]],
+    params: Dict[str, float],
+) -> CostDict:
+    """
+    计算五维绿色成本（性能优化版 v2）。
+
+    使用 NumPy 向量化计算，显著提升大规模数据的处理速度。
+
+    Args:
+        solution: 求解器返回的解，包含 routes, vehicles_used, total_late_minutes 等
+        vehicle_config: 车型配置字典
+        params: 全局参数字典
+
+    Returns:
+        成本明细字典，包含五维成本及碳排放量
+    """
+    # ── 输入验证 ──────────────────────────────────────────────
+    if not isinstance(solution, dict):
+        raise ValidationError("solution 必须是字典类型", field="solution", value=type(solution).__name__)
+    if not isinstance(vehicle_config, dict):
+        raise ValidationError("vehicle_config 必须是字典类型", field="vehicle_config", value=type(vehicle_config).__name__)
+    if not isinstance(params, dict):
+        raise ValidationError("params 必须是字典类型", field="params", value=type(params).__name__)
+
+    routes = solution.get("routes")
+    if not isinstance(routes, (list, tuple)):
+        raise ValidationError(
+            "solution.routes 必须是列表类型",
+            field="solution.routes",
+            value=type(routes).__name__,
+        )
+    vehicles_used = solution.get("vehicles_used", {})
+    if not isinstance(vehicles_used, dict):
+        vehicles_used = {}  # 容错：非字典类型降级为空字典
+
+    try:
+        return _calculate_green_cost_impl(solution, vehicle_config, params, routes, vehicles_used)
+    except (ValidationError, CostCalculationError):
+        raise
+    except Exception as e:
+        raise CostCalculationError(
+            message=f"成本计算内部错误: {e}",
+            cost_type="综合",
+            details={"error": str(e)},
+        ) from e
+
+
+def _calculate_green_cost_impl(
+    solution: Dict[str, Any],
+    vehicle_config: Dict[str, Dict[str, Any]],
+    params: Dict[str, float],
+    routes: List[Dict[str, Any]],
+    vehicles_used: Dict[str, int],
+) -> CostDict:
+    """成本计算核心实现（异常安全分离）。"""
+    fuel_price = params.get("fuel_price", 7.5)
+    hourly_wage = params.get("hourly_wage", 50.0)
+    carbon_price = params.get("carbon_price", DEFAULT_CARBON_PRICE)
+    late_penalty = params.get("late_penalty_per_min", 10.0)
+
+    vehicle_params = _get_vehicle_params_cached(vehicle_config)
+
+    # 1. 运输成本 + 碳排放 + 时间统计
+    transport_cost, carbon_emission_kg, driving_time, service_time, waiting_time = \
+        _calc_route_transport_costs(routes, vehicle_params, fuel_price)
+
+    # 2. 人工时间成本
+    labor_cost = _calc_labor_cost(driving_time, service_time, waiting_time, hourly_wage)
+
+    # 3. 车辆固定成本
+    fixed_cost = _calc_fixed_cost(vehicles_used, vehicle_params)
+
+    # 4. 违约惩罚成本
+    penalty_cost = _calc_penalty_cost(solution, late_penalty)
+
+    # 5. 碳排放成本
+    carbon_cost = _calc_carbon_cost(carbon_emission_kg, carbon_price)
+
+    total_cost = transport_cost + labor_cost + fixed_cost + penalty_cost + carbon_cost
+
+    return _build_cost_result(
+        transport_cost, labor_cost, fixed_cost, penalty_cost, carbon_cost,
+        carbon_emission_kg, driving_time, service_time, waiting_time,
+        solution.get("total_distance", 0), total_cost,
+    )
 
 
 def calculate_green_cost_batch(
@@ -346,7 +403,25 @@ def calculate_green_cost_batch(
     Returns:
         成本结果列表
     """
-    return [calculate_green_cost(sol, vehicle_config, params) for sol in solutions]
+    results = []
+    for i, sol in enumerate(solutions):
+        try:
+            results.append(calculate_green_cost(sol, vehicle_config, params))
+        except (ValidationError, CostCalculationError) as e:
+            logger = __import__("logging").getLogger("green_vrp.cost")
+            logger.warning("批量成本计算第 %d 条失败: %s", i, e)
+            results.append({
+                "transport_cost": 0, "labor_cost": 0, "fixed_cost": 0,
+                "penalty_cost": 0, "carbon_cost": 0, "total_cost": 0,
+                "carbon_emission_kg": 0, "total_distance_km": 0,
+                "total_time_min": 0, "driving_time_min": 0,
+                "service_time_min": 0, "waiting_time_min": 0,
+                "cost_breakdown": {
+                    "运输变动成本": 0, "人工时间成本": 0,
+                    "车辆固定成本": 0, "违约惩罚成本": 0, "碳排放成本": 0,
+                },
+            })
+    return results
 
 
 def format_cost_report(cost_result: Dict[str, Any]) -> str:
@@ -402,15 +477,28 @@ def calculate_cost_efficiency_metrics(
     service_time = cost_result.get("service_time_min", 0)
     carbon_emission = cost_result.get("carbon_emission_kg", 0)
 
+    # 类型安全：确保数值
+    try:
+        total_cost = float(total_cost)
+        total_distance = float(total_distance)
+        total_time = float(total_time)
+        service_time = float(service_time)
+        carbon_emission = float(carbon_emission)
+    except (TypeError, ValueError):
+        pass
+
     # 计算客户数量
-    routes = solution.get("routes", [])
+    routes = solution.get("routes")
+    if not isinstance(routes, (list, tuple)):
+        routes = []
     total_customers = sum(
-        len([s for s in route.get("stops", []) if s.get("node", 0) > 0]) for route in routes
+        len([s for s in route.get("stops", []) if isinstance(s, dict) and s.get("node", 0) > 0])
+        for route in routes if isinstance(route, dict)
     )
 
     return {
-        "cost_per_km": round(total_cost / max(total_distance, 1), 2),
+        "cost_per_km": round(total_cost / max(abs(total_distance), 1), 2),
         "cost_per_customer": round(total_cost / max(total_customers, 1), 2),
-        "carbon_per_km": round(carbon_emission / max(total_distance, 1), 4),
+        "carbon_per_km": round(carbon_emission / max(abs(total_distance), 1), 4),
         "labor_efficiency": round(service_time / max(total_time, 1), 4),
     }
