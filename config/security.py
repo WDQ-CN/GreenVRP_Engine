@@ -13,17 +13,40 @@ from typing import List, Set
 class SecurityConfig:
     """安全配置类。"""
 
-    # API 密钥配置 - 支持多个密钥，用逗号分隔
-    _api_keys_raw = os.getenv("API_KEYS", "green-vrp-default-key-2024")
+    # 环境标识
+    ENV: str = os.getenv("GREENVRP_ENV", "development")
+
+    # API 密钥配置 - 生产环境必须通过环境变量设置
+    _api_keys_raw: str = os.getenv("API_KEYS", "")
+    if not _api_keys_raw:
+        if os.getenv("GREENVRP_ENV", "development") == "production":
+            raise RuntimeError(
+                "生产环境必须设置 API_KEYS 环境变量！"
+            )
+        _api_keys_raw = "green-vrp-default-key-2024"
+        import logging
+        logging.warning(
+            "使用默认 API Key，仅限开发环境。生产环境请设置 API_KEYS 环境变量。"
+        )
     API_KEYS: Set[str] = frozenset(
         key.strip() for key in filter(None, _api_keys_raw.split(","))
     )
 
     # JWT 配置（如果使用 JWT）
-    JWT_SECRET_KEY: str = os.getenv(
-        "JWT_SECRET_KEY", 
-        "change-this-secret-key-in-production-min-32-chars"
-    )
+    _JWT_DEFAULT = "change-this-secret-key-in-production-min-32-chars"
+    _jwt_secret_key: str = os.getenv("JWT_SECRET_KEY", _JWT_DEFAULT)
+    
+    # 生产环境禁止使用默认密钥
+    if _jwt_secret_key == _JWT_DEFAULT:
+        if os.getenv("GREENVRP_ENV", "development") == "production":
+            raise RuntimeError(
+                "生产环境必须设置 JWT_SECRET_KEY 环境变量！"
+            )
+        import logging
+        logging.warning(
+            "使用默认 JWT 密钥，仅限开发环境。生产环境请设置 JWT_SECRET_KEY 环境变量。"
+        )
+    JWT_SECRET_KEY: str = _jwt_secret_key
     JWT_ALGORITHM: str = "HS256"
     JWT_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("JWT_TOKEN_EXPIRE_MINUTES", "60"))
 

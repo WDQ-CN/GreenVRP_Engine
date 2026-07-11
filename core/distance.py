@@ -24,6 +24,7 @@ import pandas as pd
 
 from config.constants import EARTH_RADIUS_KM
 from utils.geo import haversine_distance
+from exceptions.errors import DistanceCalculationError
 
 # 尝试导入scipy加速计算
 try:
@@ -308,7 +309,7 @@ def build_time_matrix(distance_matrix: List[List[int]], speed_kmh: float) -> Lis
 
     # 验证速度参数
     if speed_kmh <= 0:
-        raise ValueError(f"速度必须大于0，实际值: {speed_kmh}")
+        raise DistanceCalculationError(f"速度必须大于0，实际值: {speed_kmh}")
 
     # 转为 NumPy 数组进行向量化计算
     dist_array = np.array(distance_matrix, dtype=np.float64)
@@ -338,7 +339,7 @@ def build_time_matrix_numpy(distance_matrix: np.ndarray, speed_kmh: float) -> np
     """
     # 验证速度参数
     if speed_kmh <= 0:
-        raise ValueError(f"速度必须大于0，实际值: {speed_kmh}")
+        raise DistanceCalculationError(f"速度必须大于0，实际值: {speed_kmh}")
 
     time_array = (distance_matrix / 1000.0 / speed_kmh * 60).astype(np.int32)
     np.fill_diagonal(time_array, 0)
@@ -429,7 +430,7 @@ class DistanceMatrixCache:
 
         # 对所有坐标哈希，避免不同位置集合因采样相同而产生碰撞
         raw = str(locations) + str(scale)
-        return int(hashlib.md5(raw.encode()).hexdigest(), 16)
+        return int(hashlib.md5(raw.encode(), usedforsecurity=False).hexdigest(), 16)
 
     def get_or_compute(
         self, locations: List[Tuple[float, float]], scale: int = 1000

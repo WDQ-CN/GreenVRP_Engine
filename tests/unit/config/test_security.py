@@ -96,3 +96,46 @@ class TestIsPrivateIp:
     def test_invalid_ip(self):
         """无效 IP 应视为不安全。"""
         assert security_config._is_private_ip("not-an-ip") is True
+
+
+class TestJwtSecretKey:
+    """JWT 密钥安全策略测试（生产环境默认密钥必须阻断）。"""
+
+    def test_default_key_in_production_raises(self, monkeypatch):
+        """生产环境使用默认 JWT 密钥必须抛出 RuntimeError。"""
+        import importlib
+        import config.security
+
+        # 模拟生产环境并删除密钥环境变量
+        monkeypatch.setenv("GREENVRP_ENV", "production")
+        monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+
+        with pytest.raises(RuntimeError, match="必须设置 JWT_SECRET_KEY"):
+            importlib.reload(config.security)
+
+    def test_development_default_key_allowed(self, monkeypatch):
+        """开发环境使用默认 JWT 密钥只警告不抛出异常。"""
+        import importlib
+        import config.security
+
+        monkeypatch.setenv("GREENVRP_ENV", "development")
+        monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+
+        # 不应抛出异常
+        importlib.reload(config.security)
+        # 验证密钥为默认值
+        assert config.security.security_config.JWT_SECRET_KEY == \
+            "change-this-secret-key-in-production-min-32-chars"
+
+    def test_custom_key_in_production_works(self, monkeypatch):
+        """生产环境使用自定义 JWT 密钥应正常工作。"""
+        import importlib
+        import config.security
+
+        monkeypatch.setenv("GREENVRP_ENV", "production")
+        monkeypatch.setenv("JWT_SECRET_KEY", "my-custom-production-secret-key-32-chars!")
+
+        # 不应抛出异常
+        importlib.reload(config.security)
+        assert config.security.security_config.JWT_SECRET_KEY == \
+            "my-custom-production-secret-key-32-chars!"

@@ -19,7 +19,7 @@ class Settings:
     debug: bool = False
 
     # API 设置
-    api_host: str = "0.0.0.0"
+    api_host: str = "0.0.0.0"  # nosec - 默认开发配置，可通过环境变量覆盖
     api_port: int = 8000
 
     # 求解器设置
@@ -38,7 +38,7 @@ class Settings:
         """从环境变量创建设置。"""
         return cls(
             debug=os.getenv("GREENVRP_DEBUG", "false").lower() == "true",
-            api_host=os.getenv("GREENVRP_API_HOST", "0.0.0.0"),
+            api_host=os.getenv("GREENVRP_API_HOST", "0.0.0.0"),  # nosec - 默认开发配置
             api_port=int(os.getenv("GREENVRP_API_PORT", "8000")),
             log_level=os.getenv("GREENVRP_LOG_LEVEL", "INFO"),
             log_file=os.getenv("GREENVRP_LOG_FILE"),

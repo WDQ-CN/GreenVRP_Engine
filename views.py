@@ -7,6 +7,7 @@
 from typing import Any
 
 import folium
+import folium.plugins
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go

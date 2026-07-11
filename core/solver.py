@@ -36,6 +36,8 @@ from config.vehicles import DEFAULT_VEHICLE_CONFIG
 from logging_config import get_logger
 
 from .distance import DistanceMatrixCache, build_distance_matrix, build_time_matrix
+from data_types.solution import SolutionDict
+from exceptions.errors import SolverError
 
 # 使用统一的日志配置
 logger = get_logger(__name__)
@@ -109,9 +111,6 @@ class CallbackCache:
         self._cache.clear()
 
 
-# 全局实例池和回调缓存
-_solver_pool = SolverInstancePool(max_size=3)
-_callback_cache = CallbackCache(max_size=20)
 
 
 class GreenVRPSolver:
@@ -203,18 +202,18 @@ class GreenVRPSolver:
         ]
         missing = [col for col in required_cols if col not in self.customers_df.columns]
         if missing:
-            raise ValueError(f"缺少必要列: {missing}")
+            raise SolverError(f"缺少必要列: {missing}")
 
         # 验证数据不为空
         if len(self.customers_df) == 0:
-            raise ValueError("客户数据不能为空")
+            raise SolverError("客户数据不能为空")
 
         # 验证时间窗有效性
         invalid_tw = self.customers_df[
             self.customers_df["tw_latest"] < self.customers_df["tw_earliest"]
         ]
         if not invalid_tw.empty:
-            raise ValueError(f"时间窗无效: {invalid_tw['id'].tolist()}")
+            raise SolverError(f"时间窗无效: {invalid_tw['id'].tolist()}")
 
     def _build_locations(self) -> None:
         """构建位置坐标列表和距离/时间矩阵。"""
@@ -234,8 +233,8 @@ class GreenVRPSolver:
         self.service_times = self.customers_df["service_time_min"].values.tolist()
         
         # 优化时间窗提取 (避免 iterrows())
-        tw_earliest = self.customers_df["tw_earliest"].values.astype(int)
-        tw_latest = self.customers_df["tw_latest"].values.astype(int)
+        tw_earliest = [int(x) for x in self.customers_df["tw_earliest"].values]
+        tw_latest = [int(x) for x in self.customers_df["tw_latest"].values]
         self.time_windows = list(zip(tw_earliest, tw_latest))
 
     def _build_vehicle_list(self) -> None:
@@ -276,7 +275,7 @@ class GreenVRPSolver:
             tuple(sorted(self.vehicle_config.items())),
             self.time_penalty_per_min,
         )
-        return hashlib.md5(str(key_data).encode()).hexdigest()
+        return hashlib.md5(str(key_data).encode(), usedforsecurity=False).hexdigest()
 
     def _get_time_matrix(self, speed: float) -> List[List[int]]:
         """
@@ -391,7 +390,74 @@ class GreenVRPSolver:
 
         return search_parameters
 
-    def solve(self) -> Dict[str, Any]:
+    def _setup_solver(self) -> Tuple[pywrapcp.RoutingModel, Any]:
+        """
+        创建并配置 OR-Tools 求解器管道（路由、回调、维度、时间窗）。
+
+        提取自 solve() 和 solve_with_params() 的公共代码，
+        消除 80%+ 的代码重复。
+
+        Returns:
+            (routing, time_dimension): OR-Tools 路由模型和时间维度
+        """
+        num_locations = len(self.locations)
+
+        # 创建 Routing Index Manager（depot=0 表示仓库在第0个位置）
+        self.manager = pywrapcp.RoutingIndexManager(num_locations, self.num_vehicles, 0)
+        routing = pywrapcp.RoutingModel(self.manager)
+
+        # 注册距离回调
+        def distance_callback(from_index: int, to_index: int) -> int:
+            from_node = self.manager.IndexToNode(from_index)
+            to_node = self.manager.IndexToNode(to_index)
+            return self.distance_matrix[from_node][to_node]
+
+        transit_callback_index = routing.RegisterTransitCallback(distance_callback)
+        routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
+
+        # 添加容量约束（异构车队）
+        def demand_callback(from_index: int) -> int:
+            from_node = self.manager.IndexToNode(from_index)
+            return int(self.demands[from_node])
+
+        demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
+        capacities = [vehicle["capacity"] for vehicle in self.vehicles]
+        routing.AddDimensionWithVehicleCapacity(
+            demand_callback_index,
+            0,  # null capacity slack
+            capacities,
+            True,  # start cumul to zero
+            "Capacity",
+        )
+
+        # 添加时间维度（不同车型速度不同）
+        time_callback_indices = []
+        for vehicle_idx in range(self.num_vehicles):
+            time_callback = self._create_time_callback(vehicle_idx)
+            callback_index = routing.RegisterTransitCallback(time_callback)
+            time_callback_indices.append(callback_index)
+
+        routing.AddDimensionWithVehicleTransits(
+            time_callback_indices,
+            30,   # 等待时间上界（分钟）
+            960,  # 时间范围上界（16小时）
+            False,  # 不强制从零开始
+            "Time",
+        )
+        time_dimension = routing.GetDimensionOrDie("Time")
+
+        # 设置时间窗约束（跳过仓库）
+        for location_idx in range(1, num_locations):
+            earliest, latest = self.time_windows[location_idx]
+            index = self.manager.NodeToIndex(location_idx)
+            time_dimension.CumulVar(index).SetRange(earliest, latest)
+            time_dimension.SetCumulVarSoftUpperBound(
+                index, latest, int(self.time_penalty_per_min)
+            )
+
+        return routing, time_dimension
+
+    def solve(self) -> SolutionDict:
         """
         执行 VRPTW 求解。
 
@@ -409,94 +475,33 @@ class GreenVRPSolver:
             在有限时间内寻找高质量的可行解。
         """
         start_time = time.time()
+
+        # 使用共享管道设置
+        routing, time_dimension = self._setup_solver()
+
+        # 设置搜索参数（自适应优化）
         num_locations = len(self.locations)
-
-        # 创建 Routing Index Manager
-        # depot=0 表示仓库在第0个位置
-        self.manager = pywrapcp.RoutingIndexManager(num_locations, self.num_vehicles, 0)
-        routing = pywrapcp.RoutingModel(self.manager)
-
-        # ========== 1. 注册距离回调 ==========
-        def distance_callback(from_index: int, to_index: int) -> int:
-            from_node = self.manager.IndexToNode(from_index)
-            to_node = self.manager.IndexToNode(to_index)
-            return self.distance_matrix[from_node][to_node]
-
-        transit_callback_index = routing.RegisterTransitCallback(distance_callback)
-        routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
-
-        # ========== 2. 添加容量约束（优化版）==========
-        def demand_callback(from_index: int) -> int:
-            from_node = self.manager.IndexToNode(from_index)
-            return int(self.demands[from_node])
-
-        demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
-
-        # 为每辆车设置容量约束（异构车队）
-        # 使用统一的容量维度，但每辆车有不同的容量上限
-        capacities = [vehicle["capacity"] for vehicle in self.vehicles]
-        routing.AddDimensionWithVehicleCapacity(
-            demand_callback_index,
-            0,  # null capacity slack
-            capacities,  # 各车辆的最大容量列表
-            True,  # start cumul to zero
-            "Capacity",
-        )
-
-        # ========== 3. 添加时间维度 ==========
-        # 为每辆车注册独立的时间回调（不同速度）
-        time_callback_indices = []
-        for vehicle_idx in range(self.num_vehicles):
-            time_callback = self._create_time_callback(vehicle_idx)
-            callback_index = routing.RegisterTransitCallback(time_callback)
-            time_callback_indices.append(callback_index)
-
-        # 创建时间维度
-        routing.AddDimensionWithVehicleTransits(
-            time_callback_indices,
-            30,  # 等待时间上界（分钟）
-            960,  # 时间范围上界（16小时）
-            False,  # 不强制从零开始
-            "Time",
-        )
-        time_dimension = routing.GetDimensionOrDie("Time")
-
-        # ========== 4. 设置时间窗约束（优化版）==========
-        for location_idx in range(1, num_locations):  # 跳过仓库
-            earliest, latest = self.time_windows[location_idx]
-            index = self.manager.NodeToIndex(location_idx)
-
-            # 硬约束：到达时间必须在时间窗范围内
-            time_dimension.CumulVar(index).SetRange(earliest, latest)
-
-            # 软约束：允许迟到，但施加惩罚
-            # 只需设置一次软上界（不需要为每辆车单独设置）
-            time_dimension.SetCumulVarSoftUpperBound(index, latest, int(self.time_penalty_per_min))
-
-        # ========== 5. 设置搜索参数（自适应优化）==========
         search_parameters = self._get_adaptive_search_params(num_locations)
 
-        # ========== 6. 求解 ==========
+        # 求解
         solution = routing.SolveWithParameters(search_parameters)
 
-        # ========== 7. 提取结果 ==========
+        # 提取结果
         solve_time = time.time() - start_time
-
         if solution:
             result = self._extract_solution(routing, solution)
         else:
             result = self._create_empty_result("NO_SOLUTION_FOUND")
-
         result["solve_time_seconds"] = round(solve_time, 2)
 
         return result
 
     def solve_with_params(
         self,
-        first_solution_strategy: int = None,
-        metaheuristic: int = None,
+        first_solution_strategy: Optional[int] = None,
+        metaheuristic: Optional[int] = None,
         time_limit: Optional[int] = None,
-    ) -> Dict[str, Any]:
+    ) -> SolutionDict:
         """
         使用指定策略参数求解（支持复用求解器实例）。
 
@@ -511,50 +516,11 @@ class GreenVRPSolver:
             求解结果字典
         """
         start_time = time.time()
-        num_locations = len(self.locations)
 
-        # 创建 Routing Index Manager
-        self.manager = pywrapcp.RoutingIndexManager(num_locations, self.num_vehicles, 0)
-        routing = pywrapcp.RoutingModel(self.manager)
+        # 使用共享管道设置
+        routing, time_dimension = self._setup_solver()
 
-        # 注册距离回调
-        def distance_callback(from_index: int, to_index: int) -> int:
-            from_node = self.manager.IndexToNode(from_index)
-            to_node = self.manager.IndexToNode(to_index)
-            return self.distance_matrix[from_node][to_node]
-
-        transit_callback_index = routing.RegisterTransitCallback(distance_callback)
-        routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
-
-        # 添加容量约束
-        def demand_callback(from_index: int) -> int:
-            from_node = self.manager.IndexToNode(from_index)
-            return int(self.demands[from_node])
-
-        demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
-        capacities = [vehicle["capacity"] for vehicle in self.vehicles]
-        routing.AddDimensionWithVehicleCapacity(
-            demand_callback_index, 0, capacities, True, "Capacity"
-        )
-
-        # 添加时间维度
-        time_callback_indices = []
-        for vehicle_idx in range(self.num_vehicles):
-            time_callback = self._create_time_callback(vehicle_idx)
-            callback_index = routing.RegisterTransitCallback(time_callback)
-            time_callback_indices.append(callback_index)
-
-        routing.AddDimensionWithVehicleTransits(time_callback_indices, 30, 960, False, "Time")
-        time_dimension = routing.GetDimensionOrDie("Time")
-
-        # 设置时间窗约束
-        for location_idx in range(1, num_locations):
-            earliest, latest = self.time_windows[location_idx]
-            index = self.manager.NodeToIndex(location_idx)
-            time_dimension.CumulVar(index).SetRange(earliest, latest)
-            time_dimension.SetCumulVarSoftUpperBound(index, latest, int(self.time_penalty_per_min))
-
-        # 设置搜索参数
+        # 设置搜索参数（可指定策略）
         search_parameters = pywrapcp.DefaultRoutingSearchParameters()
         if first_solution_strategy is not None:
             search_parameters.first_solution_strategy = first_solution_strategy
@@ -584,6 +550,98 @@ class GreenVRPSolver:
 
         return result
 
+    def _build_stop_info(self, node_index: int, arrival_time: int,
+                          departure_time: int, late_minutes: int) -> Dict[str, Any]:
+        """构建单站点的数据结构。"""
+        return {
+            "node": node_index,
+            "customer_id": int(self.customers_df.iloc[node_index]["id"]),
+            "customer_name": self.customers_df.iloc[node_index]["name"],
+            "lat": self.locations[node_index][0],
+            "lon": self.locations[node_index][1],
+            "demand": int(self.demands[node_index]),
+            "arrival_time": int(arrival_time),
+            "departure_time": int(departure_time),
+            "service_time": self.service_times[node_index] if node_index > 0 else 0,
+            "tw_earliest": int(self.time_windows[node_index][0]),
+            "tw_latest": int(self.time_windows[node_index][1]),
+            "late_minutes": int(late_minutes),
+            "is_late": late_minutes > 0,
+        }
+
+    def _build_depot_stop(self, end_index: int) -> Dict[str, Any]:
+        """构建路线终点（仓库）的数据结构。"""
+        if end_index == 0:
+            return {
+                "node": end_index,
+                "customer_id": None,  # 仓库不是客户
+                "customer_name": "仓库",
+                "lat": self.locations[end_index][0],
+                "lon": self.locations[end_index][1],
+                "demand": 0,
+                "service_time": 0,
+            }
+        # 非0索引说明路线未正常结束，但仍记录
+        return {
+            "node": end_index,
+            "customer_id": int(self.customers_df.iloc[end_index]["id"]),
+            "customer_name": self.customers_df.iloc[end_index]["name"],
+            "lat": self.locations[end_index][0],
+            "lon": self.locations[end_index][1],
+        }
+
+    def _extract_route(
+        self, routing: pywrapcp.RoutingModel, solution: pywrapcp.Assignment,
+        time_dimension: Any, vehicle_idx: int,
+    ) -> Tuple[Dict[str, Any], float, int, List[int]]:
+        """提取单辆车的路线信息，返回 (route_info, distance, late_minutes, route_nodes)。"""
+        index = routing.Start(vehicle_idx)
+        route_info: Dict[str, Any] = {
+            "vehicle_id": vehicle_idx,
+            "vehicle_type": self.vehicles[vehicle_idx]["type"],
+            "vehicle_color": self.vehicles[vehicle_idx]["color"],
+            "capacity": self.vehicles[vehicle_idx]["capacity"],
+            "stops": [],
+            "distance_km": 0,
+            "total_demand": 0,
+            "total_time_min": 0,
+            "late_minutes": 0,
+        }
+
+        route_distance = 0
+        route_nodes = []
+        vehicle_late = 0
+
+        while not routing.IsEnd(index):
+            node_index = self.manager.IndexToNode(index)
+            time_var = time_dimension.CumulVar(index)
+            arrival_time = solution.Min(time_var)
+            departure_time = solution.Max(time_var)
+            tw_earliest, tw_latest = self.time_windows[node_index]
+
+            late_minutes = max(0, arrival_time - tw_latest)
+            vehicle_late += late_minutes
+
+            service_time = self.service_times[node_index] if node_index > 0 else 0
+
+            stop_info = self._build_stop_info(node_index, arrival_time, departure_time, late_minutes)
+            route_info["stops"].append(stop_info)
+            route_info["total_demand"] += self.demands[node_index]
+            route_info["total_time_min"] += service_time
+            route_info["late_minutes"] += late_minutes
+
+            previous_index = index
+            index = solution.Value(routing.NextVar(index))
+            route_distance += routing.GetArcCostForVehicle(previous_index, index, vehicle_idx)
+            route_nodes.append(node_index)
+
+        # 添加终点（返回仓库）
+        end_index = self.manager.IndexToNode(index)
+        route_info["stops"].append(self._build_depot_stop(end_index))
+        route_info["distance_km"] = route_distance / 1000.0
+
+        return route_info, route_distance, vehicle_late, route_nodes
+
     def _extract_solution(
         self, routing: pywrapcp.RoutingModel, solution: pywrapcp.Assignment
     ) -> Dict[str, Any]:
@@ -599,104 +657,20 @@ class GreenVRPSolver:
         vehicles_used: Dict[str, int] = {v_type: 0 for v_type in self.vehicle_config}
 
         for vehicle_idx in range(self.num_vehicles):
-            index = routing.Start(vehicle_idx)
-            route_info: Dict[str, Any] = {
-                "vehicle_id": vehicle_idx,
-                "vehicle_type": self.vehicles[vehicle_idx]["type"],
-                "vehicle_color": self.vehicles[vehicle_idx]["color"],
-                "capacity": self.vehicles[vehicle_idx]["capacity"],
-                "stops": [],
-                "distance_km": 0,
-                "total_demand": 0,
-                "total_time_min": 0,
-                "late_minutes": 0,
-            }
+            route_info, route_distance, vehicle_late, route_nodes = self._extract_route(
+                routing, solution, time_dimension, vehicle_idx
+            )
 
-            route_distance = 0
-            route_nodes = []
+            total_distance += route_distance
+            total_late_minutes += vehicle_late
 
-            while not routing.IsEnd(index):
-                node_index = self.manager.IndexToNode(index)
-                time_var = time_dimension.CumulVar(index)
-
-                # 时间信息
-                arrival_time = solution.Min(time_var)
-                departure_time = solution.Max(time_var)
-                tw_earliest, tw_latest = self.time_windows[node_index]
-
-                # 计算迟到时间
-                late_minutes = max(0, arrival_time - tw_latest)
-                total_late_minutes += late_minutes
-                route_info["late_minutes"] += late_minutes
-
-                # 服务时间
-                service_time = self.service_times[node_index] if node_index > 0 else 0
-                route_info["total_time_min"] += service_time
-
-                stop_info = {
-                    "node": node_index,
-                    "customer_id": int(self.customers_df.iloc[node_index]["id"]),
-                    "customer_name": self.customers_df.iloc[node_index]["name"],
-                    "lat": self.locations[node_index][0],
-                    "lon": self.locations[node_index][1],
-                    "demand": int(self.demands[node_index]),
-                    "arrival_time": int(arrival_time),
-                    "departure_time": int(departure_time),
-                    "service_time": service_time,
-                    "tw_earliest": tw_earliest,
-                    "tw_latest": tw_latest,
-                    "late_minutes": int(late_minutes),
-                    "is_late": late_minutes > 0,
-                }
-                route_info["stops"].append(stop_info)
-                route_info["total_demand"] += self.demands[node_index]
-
-                # 下一个节点
-                previous_index = index
-                index = solution.Value(routing.NextVar(index))
-                route_distance += routing.GetArcCostForVehicle(previous_index, index, vehicle_idx)
-
-                route_nodes.append(node_index)
-
-            # 添加终点（返回仓库）
-            end_index = self.manager.IndexToNode(index)
-            # 终点是仓库（depot，索引0），不是客户
-            if end_index == 0:
-                route_info["stops"].append(
-                    {
-                        "node": end_index,
-                        "customer_id": None,  # 仓库不是客户
-                        "customer_name": "仓库",
-                        "lat": self.locations[end_index][0],
-                        "lon": self.locations[end_index][1],
-                        "demand": 0,
-                        "service_time": 0,
-                    }
-                )
-            else:
-                # 非0索引说明路线未正常结束，但仍记录
-                route_info["stops"].append(
-                    {
-                        "node": end_index,
-                        "customer_id": int(self.customers_df.iloc[end_index]["id"]),
-                        "customer_name": self.customers_df.iloc[end_index]["name"],
-                        "lat": self.locations[end_index][0],
-                        "lon": self.locations[end_index][1],
-                    }
-                )
-
-            # 转换距离为公里
-            route_info["distance_km"] = route_distance / 1000.0
-            total_distance += route_info["distance_km"]
-
-            # 只有访问了客户的车辆才算被使用
             if len(route_nodes) > 0:
                 vehicles_used[route_info["vehicle_type"]] += 1
                 routes.append(route_info)
 
         return {
             "routes": routes,
-            "total_distance": round(total_distance, 2),
+            "total_distance": round(total_distance / 1000.0, 2),
             "vehicles_used": vehicles_used,
             "total_late_minutes": int(total_late_minutes),
             "solution_status": "SUCCESS",

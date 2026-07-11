@@ -1,17 +1,78 @@
 """
 日志配置模块
 
-提供统一的日志配置功能。
+提供统一的日志配置与敏感数据脱敏功能。
 """
 
 import logging
+import re
 import sys
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # 默认日志格式
 DEFAULT_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+# 敏感数据脱敏模式：(正则, 替换模板)
+# 用于 SensitiveDataFilter 和 JsonFormatter
+SENSITIVE_PATTERNS: List[Tuple[str, str]] = [
+    # API Key: api_key = "xxx...yyy" 或 "api_key":"xxx...yyy"
+    (r'(api_key["\']?\s*[:=]\s*["\']?)[^"\',;}\s]{8}([^"\',;}\s]{4,})', r'\1****\2'),
+    # Bearer Token: 三段式 JWT (如 Bearer eyJxxx.yyy.zzz)
+    (r'(Bearer\s+)([A-Za-z0-9_\-]+(?:\.[A-Za-z0-9_\-]+)+)', r'\1****'),
+    # Password 字段
+    (r'(password["\']?\s*[:=]\s*["\']?)([^"\',;}\s]+)', r'\1****'),
+    # Secret 字段
+    (r'(secret["\']?\s*[:=]\s*["\']?)([^"\',;}\s]+)', r'\1****'),
+    # Token 字段（16位以上）
+    (r'(token["\']?\s*[:=]\s*["\']?)([A-Za-z0-9_\-]{16,})', r'\1****'),
+    # 疑似信用卡号（16位数字，可能含分隔符）
+    (r'(\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4})', '****-****-****-****'),
+]
+
+
+class SensitiveDataFilter(logging.Filter):
+    """日志敏感数据过滤器。
+
+    在日志输出前对 API Key、Token、密码等敏感信息进行脱敏处理。
+    使用正则模式匹配并替换为 **** 标记。
+
+    可通过环境变量 ``GREENVRP_LOG_REDACT=false`` 禁用。
+    """
+
+    _compiled: List[Tuple[re.Pattern, str]] = []
+
+    def __init__(self, name: str = ""):
+        super().__init__(name)
+        if not SensitiveDataFilter._compiled:
+            SensitiveDataFilter._compiled = [
+                (re.compile(pattern, re.IGNORECASE), replacement)
+                for pattern, replacement in SENSITIVE_PATTERNS
+            ]
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # 检查环境变量是否关闭脱敏
+        import os
+        if os.environ.get("GREENVRP_LOG_REDACT", "true").lower() == "false":
+            return True
+
+        # 脱敏 message
+        if record.msg and isinstance(record.msg, str):
+            for pattern, replacement in SensitiveDataFilter._compiled:
+                record.msg = pattern.sub(replacement, record.msg)
+
+        # 脱敏 args 中的字符串参数
+        if record.args:
+            sanitized = []
+            for arg in record.args:
+                if isinstance(arg, str):
+                    for pattern, replacement in SensitiveDataFilter._compiled:
+                        arg = pattern.sub(replacement, arg)
+                sanitized.append(arg)
+            record.args = tuple(sanitized)
+
+        return True
 
 
 def setup_logging(
@@ -88,53 +149,65 @@ class ContextFilter(logging.Filter):
 class JsonFormatter(logging.Formatter):
     """
     JSON 格式化器，将日志输出为 JSON 格式。
+    输出前对敏感数据字段进行脱敏。
     """
+
+    _compiled: List[Tuple[re.Pattern, str]] = []
+
+    # 标准日志字段（不进行敏感数据扫描）
+    STANDARD_FIELDS = {
+        "name", "msg", "args", "created", "filename", "funcName",
+        "levelname", "levelno", "lineno", "module", "msecs", "pathname",
+        "process", "processName", "relativeCreated", "thread", "threadName",
+        "exc_info", "exc_text", "stack_info", "message",
+    }
+
+    def __init__(self):
+        super().__init__()
+        if not JsonFormatter._compiled:
+            JsonFormatter._compiled = [
+                (re.compile(pattern, re.IGNORECASE), replacement)
+                for pattern, replacement in SENSITIVE_PATTERNS
+            ]
+
+    def _redact(self, text: str) -> str:
+        """对文本应用敏感数据脱敏。"""
+        import os
+        if os.environ.get("GREENVRP_LOG_REDACT", "true").lower() == "false":
+            return text
+        for pattern, replacement in self._compiled:
+            text = pattern.sub(replacement, text)
+        return text
 
     def format(self, record: logging.LogRecord) -> str:
         import json
+
+        # 先应用 SensitiveDataFilter（如果存在）
+        for f in record.logger.filters if hasattr(record, 'logger') else []:
+            if isinstance(f, SensitiveDataFilter):
+                f.filter(record)
+                break
 
         log_data = {
             "timestamp": datetime.fromtimestamp(record.created).isoformat(),
             "logger": record.name,
             "level": record.levelname,
-            "message": record.getMessage(),
+            "message": self._redact(record.getMessage()),
             "module": record.module,
             "function": record.funcName,
             "line": record.lineno,
         }
 
         if record.exc_info:
-            log_data["exception"] = self.formatException(record.exc_info)
+            log_data["exception"] = self._redact(self.formatException(record.exc_info))
 
-        # 添加额外字段
+        # 添加额外字段（脱敏后）
         for key, value in record.__dict__.items():
-            if key not in [
-                "name",
-                "msg",
-                "args",
-                "created",
-                "filename",
-                "funcName",
-                "levelname",
-                "levelno",
-                "lineno",
-                "module",
-                "msecs",
-                "pathname",
-                "process",
-                "processName",
-                "relativeCreated",
-                "thread",
-                "threadName",
-                "exc_info",
-                "exc_text",
-                "stack_info",
-                "message",
-                "timestamp",
-                "logger",
-                "level",
-            ]:
-                log_data[key] = value
+            if key not in self.STANDARD_FIELDS:
+                if isinstance(value, str):
+                    log_data[key] = self._redact(value)
+                else:
+                    log_data[key] = value
 
         return json.dumps(log_data, ensure_ascii=False)
 
@@ -176,3 +249,10 @@ solver_logger = get_logger("green_vrp.solver")
 api_logger = get_logger("green_vrp.api")
 tracking_logger = get_logger("green_vrp.tracking")
 cost_logger = get_logger("green_vrp.cost")
+
+# 为预配置日志器添加敏感数据脱敏过滤器
+_sensitive_filter = SensitiveDataFilter()
+for _logger in (solver_logger, api_logger, tracking_logger, cost_logger):
+    # 避免重复添加
+    if not any(isinstance(f, SensitiveDataFilter) for f in _logger.filters):
+        _logger.addFilter(_sensitive_filter)

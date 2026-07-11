@@ -151,7 +151,17 @@ def create_access_token(
     to_encode.update({"exp": expire, "iat": datetime.now(timezone.utc)})
 
     # 验证密钥配置
-    if not security_config.JWT_SECRET_KEY or security_config.JWT_SECRET_KEY.startswith("your-secret"):
+    _DEFAULT_JWT_SECRET = "change-this-secret-key-in-production-min-32-chars"
+    if (
+        not security_config.JWT_SECRET_KEY
+        or security_config.JWT_SECRET_KEY == _DEFAULT_JWT_SECRET
+        or security_config.JWT_SECRET_KEY.startswith("your-secret")
+    ):
+        if security_config.ENV == "production":
+            raise ValueError(
+                "生产环境禁止使用默认 JWT 密钥！"
+                "请通过 JWT_SECRET_KEY 环境变量设置。"
+            )
         logger.warning("使用默认 JWT 密钥，生产环境必须修改！")
 
     encoded_jwt = jwt.encode(
@@ -232,13 +242,13 @@ def verify_token(token: str = Security(oauth2_scheme)) -> Optional[TokenData]:
             detail="Token 已过期",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    except JWTError as e:
+    except JWTError:
         _log_audit(
             action="jwt_auth",
             user_type="jwt",
             identifier="invalid_token",
             success=False,
-            reason=f"jwt_error: {str(e)}",
+            reason="jwt_error: token_validation_failed",
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

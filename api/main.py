@@ -14,12 +14,15 @@ API 文档：
     http://localhost:8000/redoc (ReDoc)
 """
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+
+logger = logging.getLogger(__name__)
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routers import health_router, scenarios_router, solver_router
+from .routers import auth_router, health_router, scenarios_router, solver_router
 from .security.auth import get_current_user
 from .security.rate_limit import limiter, setup_rate_limiting
 from config.security import security_config
@@ -29,10 +32,10 @@ from config.security import security_config
 async def lifespan(app: FastAPI):
     """应用生命周期管理。"""
     # 启动时初始化
-    print("GreenVRP Engine API 启动中...")
+    logger.info("GreenVRP Engine API 启动中...")
     yield
     # 关闭时清理
-    print("GreenVRP Engine API 关闭中...")
+    logger.info("GreenVRP Engine API 关闭中...")
 
 
 # 创建 FastAPI 应用
@@ -74,6 +77,7 @@ app.add_middleware(
 setup_rate_limiting(app)
 
 # 注册路由
+app.include_router(auth_router, prefix="/api/v1", tags=["认证"])
 app.include_router(health_router, prefix="/api/v1", tags=["系统"])
 app.include_router(solver_router, prefix="/api/v1", tags=["求解器"])
 app.include_router(scenarios_router, prefix="/api/v1", tags=["场景管理"])
@@ -84,7 +88,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         "api.main:app",
-        host="0.0.0.0",
+        host="0.0.0.0",  # nosec - 开发服务器需要监听所有接口
         port=8000,
         reload=True,
     )

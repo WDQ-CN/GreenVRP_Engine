@@ -227,20 +227,18 @@ def create_performance_comparison_chart(solutions_history):
         height=500,
         xaxis_title="求解方案",
         yaxis=dict(
-            title="求解时间 (秒)",
-            titlefont=dict(color=ENTERPRISE_COLORS["accent"]),
+            title=dict(text="求解时间 (秒)", font=dict(color=ENTERPRISE_COLORS["accent"])),
             tickfont=dict(color=ENTERPRISE_COLORS["accent"]),
         ),
         yaxis2=dict(
-            title="总距离 (km)",
-            titlefont=dict(color=ENTERPRISE_COLORS["success"]),
+            title=dict(text="总距离 (km)", font=dict(color=ENTERPRISE_COLORS["success"])),
             tickfont=dict(color=ENTERPRISE_COLORS["success"]),
             overlaying="y",
             side="right",
         ),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        **enterprise_chart_template(),
     )
+    fig.update_layout(**enterprise_chart_template())
 
     return fig
 
@@ -457,7 +455,7 @@ def create_efficiency_indicators(cost_result, solution):
                 name=indicator["name"],
                 number={
                     "font": {"size": 24, "color": ENTERPRISE_COLORS["primary"]},
-                    "format": f".{2 if '%' not in indicator['suffix'] else 1}f",
+                    "valueformat": f".{2 if '%' not in indicator['suffix'] else 1}f",
                     "suffix": f" {indicator['suffix']}",
                 },
                 title={
