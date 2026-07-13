@@ -4,7 +4,7 @@ streamlit-folium>=0.15.0
 
 # 数据处理
 pandas>=2.0.0
-numpy>=1.24.0
+numpy>=2.5.1
 
 # 可视化
 folium>=0.14.0
