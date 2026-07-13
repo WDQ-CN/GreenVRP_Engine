@@ -6,7 +6,7 @@ pytest-mock>=3.10.0
 pytest-timeout>=2.2.0
 
 # 测试工具
-httpx>=0.24.0  # 用于 API 测试
+httpx>=0.28.1  # 用于 API 测试
 coverage>=7.0.0
 
 # 代码质量
