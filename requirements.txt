@@ -24,7 +24,7 @@ pydantic>=2.0.0
 sqlalchemy>=2.0.0
 
 # HTTP 客户端（用于回调功能）
-httpx>=0.24.0
+httpx>=0.28.1
 
 # 安全增强
 slowapi>=0.1.9
