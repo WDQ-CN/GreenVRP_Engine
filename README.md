@@ -1,570 +1,405 @@
 # GreenVRP Engine
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![FastAPI](https://img.shields.io/badge/fastapi-0.104+-green.svg)](https://fastapi.tiangolo.com/)
-[![OR-Tools](https://img.shields.io/badge/or--tools-9.7+-orange.svg)](https://developers.google.com/optimization)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/fastapi-0.104%2B-green.svg)](https://fastapi.tiangolo.com/)
+[![OR-Tools](https://img.shields.io/badge/or--tools-9.7%2B-orange.svg)](https://developers.google.com/optimization)
+[![React](https://img.shields.io/badge/react-19%2B-149eca.svg)](https://react.dev/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**绿色车辆路径规划引擎** - 考虑碳排放的智能物流路径优化系统
+**绿色车辆路径规划引擎** — 把碳排放放进目标函数的异构车队 VRPTW 求解系统。
 
 ## 项目简介
 
-GreenVRP Engine 是一个专注于绿色物流的车辆路径规划（VRP）求解引擎。系统以碳排放为核心优化目标，综合考虑运输成本、时间窗约束、车辆容量等多维度因素，为企业提供可持续发展的物流决策支持。
+GreenVRP Engine 面向城市配送场景，在容量、软时间窗、异构车队与工作时长约束下，同时优化运输、人工、固定、违约与碳排五维成本。引擎以 OR-Tools 为首解与精确子问题求解器，叠加载重感知二次优化、多种子 ALNS、路线池重组与 CP-SAT 配对精修，并提供 FastAPI、React Web 控制台与 Streamlit 界面。
 
-### 核心特性
+## 核心特性
 
-- 🌱 **碳感知优化** - 以碳排放为主要优化目标，支持碳预算约束
-- 📊 **五维成本核算** - 运输、固定、人工、碳排、罚金成本全面覆盖
-- 🚚 **多车型支持** - 支持 4.2m、7.6m、9.6m 等多种车型混合调度
-- ⏱️ **软时间窗** - 支持迟到罚金的弹性时间窗
-- 🔄 **动态需求响应** - 实时订单变更、交通延误、车辆故障处理
-- 📍 **实时位置追踪** - GPS 模拟与车辆状态监控（计划中）
-- 📈 **多场景分析** - 策略评估、敏感度分析、场景对比
-- 🎯 **REST API** - 完整的 API 接口，支持系统集成
+- **五维成本目标**：运输（含载重相关油耗）、人工（行驶 + 等待 + 服务）、车辆固定、迟到罚金、碳排成本统一进入目标函数。
+- **载重相关油耗**：额定油耗作为 50% 载重基准，空载 0.75×、满载 1.25×，按逐段剩余载重线性插值。
+- **时变速度**：早高峰 0.65×、晚高峰 0.70×，并自动优化发车时刻以避开高峰、减少等待。
+- **车队数量是上限**：`count` 表示可用车辆数，不要求全部使用；空路线不计入 `vehicles_used`，固定成本只对实际发车车辆计费。
+- **异构与自定义车型**：默认 4.2m / 7.6m / 9.6m，可新增任意车型并自定义载重、固定成本、油耗与速度。
+- **多种子 ALNS**：7 类破坏算子 + 3 类修复算子、自适应权重、SA/LAHC 接受准则、扰动与整路线消除。
+- **精确子问题增强**：路线池 CP-SAT 集合划分、逐对路线 CP-SAT 重排、2-opt* / VND / 段搬迁后处理。
+- **可复现基准**：100 节点固定种子基准，支持车队配置、ALNS 参数与流水线阶段对比。
+- **双前端**：React + Vite 控制台（`web/`）与 Streamlit 界面（`web_app.py` / `frontend/app.py`）。
+
+## 求解流水线
+
+```
+客户与车型配置
+      │
+      ▼
+① 多策略 OR-Tools 首解（5 组策略并行，软时间窗 + 容量 + 固定成本 + 碳成本）
+      │
+      ▼
+② 双路径首版解选择（优化前成本最优 + 短 ALNS 探针最优）
+      │
+      ▼
+③ 载重感知二次求解（按上一轮逐车实际载重率重建弧成本）
+      │
+      ▼
+④ 车队缩减候选（仅当当前解用满全部可用车辆时尝试减少一辆）
+      │
+      ▼
+⑤ 多种子 ALNS（默认 16 组种子 × 固定迭代预算，含早晚高峰发车变体）
+      │
+      ▼
+⑥ 跨种子路线池重组（CP-SAT 集合划分，保证客户覆盖与车队上限）
+      │
+      ▼
+⑦ 2-opt* / VND / 段搬迁 / 最终重强化
+      │
+      ▼
+⑧ CP-SAT 逐对路线精确重排（容量、时间窗、18:00 返回、白天速度）
+      │
+      ▼
+⑨ 逐路线发车时刻优化，按真实五维成本保留最优解
+```
+
+### ALNS 算子
+
+- 破坏：随机、最差、相关性、整路线、小路线优先、连续段、相邻路线对。
+- 修复：贪心、regret-2、regret-3。
+- 接受：模拟退火（默认）或 LAHC；权重按得分自适应更新，并设下限防止算子饥饿。
+- 收尾：整路线消除、路线内精修与发车时刻优化。
 
 ## 快速开始
 
 ### 环境要求
 
-- Python 3.10+
+- Python 3.11 / 3.12（CI 使用 3.11、3.12）
+- Node.js 20+（仅 Web 控制台需要）
 - Windows / Linux / macOS
 
 ### 安装
 
 ```bash
-# 克隆项目
-git clone https://github.com/your-org/green-vrp-engine.git
-cd green-vrp-engine
+git clone https://github.com/WDQ-CN/GreenVRP_Engine.git
+cd GreenVRP_Engine
 
-# 创建虚拟环境
 python -m venv .venv
-.venv\Scripts\activate  # Windows
-# source .venv/bin/activate  # Linux/macOS
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # Linux / macOS
 
-# 安装依赖
 pip install -r requirements.txt
-pip install -r requirements-test.txt  # 安装测试依赖（可选）
+pip install -r requirements-test.txt   # 可选：测试依赖
 ```
 
-`.venv` 目录已排除版本控制，建议为每个环境创建独立虚拟环境。
-
-### 基本使用
+### 基本求解
 
 ```python
 import pandas as pd
-from core.solver import GreenVRPSolver, solve_with_multiple_strategies
+from core.solver import GreenVRPSolver
 from core.cost import calculate_green_cost
-from config.vehicles import DEFAULT_VEHICLE_CONFIG
 from config.constants import DEFAULT_PARAMS
+from config.vehicles import DEFAULT_VEHICLE_CONFIG
 
-# 加载客户数据
-df = pd.read_csv('data/mock_customers.csv')
+df = pd.read_csv("data/mock_customers.csv")
 
-# 创建求解器
 solver = GreenVRPSolver(
     customers_df=df,
     vehicle_config=DEFAULT_VEHICLE_CONFIG,
     time_penalty_per_min=10.0,
     search_time_limit=60,
+    fuel_price=DEFAULT_PARAMS["fuel_price"],
+    carbon_price=DEFAULT_PARAMS["carbon_price"],
 )
-
-# 求解
 solution = solver.solve()
+cost = calculate_green_cost(solution, DEFAULT_VEHICLE_CONFIG, DEFAULT_PARAMS)
 
-# 计算成本
-cost_result = calculate_green_cost(solution, DEFAULT_VEHICLE_CONFIG, DEFAULT_PARAMS)
-
-# 输出结果
 print(f"总距离: {solution['total_distance']:.2f} km")
-print(f"总成本: ¥{cost_result['total_cost']:,.2f}")
-print(f"碳排放: {cost_result['carbon_emission_kg']:.2f} kg CO2")
+print(f"总成本: ¥{cost['total_cost']:,.2f}")
+print(f"碳排放: {cost['carbon_emission_kg']:.2f} kg CO2")
 ```
 
-## 项目结构
-
-```
-green_vrp_engine/
-├── api/                    # REST API 模块
-│   ├── main.py            # FastAPI 应用入口
-│   ├── routers/           # API 路由
-│   │   ├── solver.py      # 求解接口
-│   │   ├── scenarios.py   # 场景管理
-│   │   └── health.py      # 健康检查
-│   ├── schemas/           # Pydantic 数据模型
-│   │   ├── request.py     # 请求模型
-│   │   └── response.py    # 响应模型
-│   └── services/          # 业务逻辑层
-│       └── solver_service.py
-│
-├── core/                   # 核心模块
-│   ├── distance.py        # 距离计算（Haversine、网格距离）
-│   ├── cost.py            # 五维成本核算
-│   └── solver.py          # VRP 求解器
-│
-├── optimization/           # 优化模块
-│   ├── multi_objective.py # 多目标优化
-│   ├── carbon_aware.py    # 碳感知优化
-│   └── dynamic.py         # 动态重优化
-│
-├── analysis/               # 分析模块
-│   ├── comparison.py      # 场景对比分析
-│   ├── sensitivity.py     # 敏感度分析
-│   └── strategy_eval.py   # 策略效果评估
-│
-├── tracking/               # 追踪模块（计划中）
-│
-├── models/                 # 数据模型层
-│   ├── customer.py        # 客户模型
-│   ├── vehicle_config.py  # 车辆配置模型
-│   ├── scenario.py        # 场景模型
-│   ├── solution.py        # 求解结果模型
-│   └── database.py        # 数据库模型
-│
-├── data_types/             # 数据类型定义
-│   ├── customer.py        # 客户数据类型
-│   ├── vehicle.py         # 车辆数据类型
-│   ├── solution.py        # 求解结果类型
-│   └── cost.py            # 成本数据类型
-│
-├── config/                 # 配置模块
-│   ├── constants.py       # 常量定义
-│   ├── settings.py        # 系统设置
-│   └── vehicles.py        # 默认车型配置
-│
-├── utils/                  # 工具模块
-│   ├── geo.py             # 地理位置工具
-│   ├── time.py            # 时间处理工具
-│   └── validation.py      # 数据验证工具
-│
-├── exceptions/             # 异常定义
-│   └── errors.py          # 自定义异常类
-│
-├── tests/                  # 测试套件
-│   ├── unit/              # 单元测试
-│   ├── integration/       # 集成测试
-│   ├── fixtures/          # 测试夹具
-│   └── utils/             # 测试工具
-│
-├── data/                   # 数据目录
-│   └── mock_customers.csv # 示例客户数据
-│
-├── frontend/               # 前端界面
-│   ├── app.py             # 企业简约风格前端
-│   ├── config.py           # 前端配置
-│   └── components/        # UI 组件
-│
-├── start_fast.py           # 高性能启动器
-├── web_app.py              # Streamlit Web 应用
-├── start_enterprise_ui.py   # 企业 UI 启动器
-├── start_optimized.py      # 优化版启动器
-├── requirements.txt         # 运行依赖
-└── requirements-test.txt    # 测试依赖
-```
-
-## 核心功能详解
-
-### 1. 碳感知优化
-
-支持三种碳优化方法：
+### 完整流水线（推荐）
 
 ```python
-from optimization.carbon_aware import CarbonAwareOptimizer
+from core.solver import solve_with_multiple_strategies_parallel
+from config.constants import DEFAULT_PARAMS
+from config.vehicles import DEFAULT_VEHICLE_CONFIG
 
-optimizer = CarbonAwareOptimizer(solver_func, customers, vehicle_config, params)
-
-# 加权法：将碳排放作为优化目标之一
-result = optimizer.optimize_for_carbon(method="weighted")
-
-# 约束法：将碳排放作为硬约束
-result = optimizer.optimize_for_carbon(
-    carbon_target=50,  # 目标 50kg CO2
-    method="constraint"
+solution = solve_with_multiple_strategies_parallel(
+    customers_df=df,
+    vehicle_config=DEFAULT_VEHICLE_CONFIG,
+    time_penalty_per_min=10.0,
+    time_limit=45,
+    cost_params=DEFAULT_PARAMS,
 )
-
-# 层次法：先优化碳排放，再优化成本
-result = optimizer.optimize_for_carbon(method="hierarchical")
-
-# 计算碳效率报告
-report = optimizer.calculate_carbon_efficiency(result)
-print(f"总碳排放: {report.total_carbon_kg:.2f} kg CO2")
-print(f"单位距离碳排放: {report.carbon_per_km:.4f} kg/km")
 ```
 
-### 2. 五维成本核算
+## 车队与成本模型
+
+### 车队配置
 
 ```python
-from core.cost import calculate_green_cost
-
-result = calculate_green_cost(solution, vehicle_config, params)
-
-# 输出成本明细
-print(f"运输成本: {result['transport_cost']:.2f} 元")
-print(f"固定成本: {result['fixed_cost']:.2f} 元")
-print(f"人工成本: {result['labor_cost']:.2f} 元")
-print(f"碳排放成本: {result['carbon_cost']:.2f} 元")
-print(f"罚金成本: {result['penalty_cost']:.2f} 元")
-print(f"总成本: {result['total_cost']:.2f} 元")
-print(f"碳排放量: {result['carbon_emission_kg']:.2f} kg CO2")
+vehicle_config = {
+    "4.2m": {
+        "capacity": 800,
+        "fixed_cost": 200,
+        "fuel_per_100km": 12,   # 50% 载重基准
+        "speed_kmh": 40,
+        "count": 5,             # 可用上限，不是必须使用数量
+        "color": "#1f77b4",
+    },
+    "6.8m": {                   # 自定义车型
+        "capacity": 1200,
+        "fixed_cost": 320,
+        "fuel_per_100km": 15,
+        "speed_kmh": 36,
+        "count": 2,
+        "color": "#0f766e",
+    },
+}
 ```
 
-### 3. 动态需求响应
+可选字段 `fuel_empty_per_100km` / `fuel_full_per_100km` 用于显式指定空载/满载油耗；留空时分别取 `0.75×` / `1.25×fuel_per_100km`。
 
-支持处理多种动态事件：
+### 载重相关油耗
 
-```python
-from optimization.dynamic import DynamicReoptimizer, DynamicEvent, EventType
-
-reoptimizer = DynamicReoptimizer(solver_func, customers, vehicle_config, params)
-reoptimizer.set_current_solution(current_solution)
-
-# 处理新订单
-event = DynamicEvent(
-    event_type=EventType.NEW_ORDER,
-    timestamp=time.time(),
-    data={"customer": new_customer}
-)
-result = reoptimizer.handle_event(event)
-
-# 处理订单取消
-event = DynamicEvent(
-    event_type=EventType.CANCEL_ORDER,
-    timestamp=time.time(),
-    data={"customer_id": 5}
-)
-result = reoptimizer.handle_event(event)
-
-# 处理交通延误
-event = DynamicEvent(
-    event_type=EventType.TRAFFIC_DELAY,
-    timestamp=time.time(),
-    data={"delay_minutes": 30, "segment": (1, 2)}
-)
-result = reoptimizer.handle_event(event)
-
-# 处理车辆故障
-event = DynamicEvent(
-    event_type=EventType.VEHICLE_BREAKDOWN,
-    timestamp=time.time(),
-    data={"vehicle_id": 0}
-)
-result = reoptimizer.handle_event(event)
+```text
+fuel_empty = 0.75 × fuel_per_100km
+fuel_full  = 1.25 × fuel_per_100km
+fuel_per_100km(load_ratio) = fuel_empty + (fuel_full - fuel_empty) × load_ratio
 ```
 
-### 4. 实时位置追踪（计划中）
+### 时变速度
 
-> `tracking/` 模块尚在开发中，计划包含：位置追踪、GPS 模拟、电子围栏、ETA 预估等功能。
+| 时段 | 速度系数 |
+|------|----------|
+| 00:00–07:00 | 1.15 |
+| 07:00–09:00 | 0.65 |
+| 09:00–17:00 | 1.00 |
+| 17:00–19:00 | 0.70 |
+| 19:00 以后 | 1.10 |
 
-### 5. 多场景对比分析（需先完成求解）
+首轮 OR-Tools 使用工作日平均速度系数；ALNS 与最终成本按逐段时变速度重算，并优化每条路线的发车时刻。
 
-```python
-from analysis.comparison import ScenarioComparison
+### 五维成本
 
-comparison = ScenarioComparison()
-result = comparison.compare_solutions(
-    [solution_a, solution_b, solution_c],
-    scenario_names=["方案A", "方案B", "方案C"]
-)
-
-print(f"最优方案: {result.best_scenario}")
-
-# 生成雷达图
-fig = comparison.generate_radar_chart(result)
-fig.show()
-
-# 生成柱状图
-fig = comparison.generate_bar_comparison(result, metric="total_cost")
-
-# 生成热力图
-fig = comparison.generate_heatmap(result)
-
-# 生成文本报告
-report = comparison.generate_comparison_report(result)
-print(report)
+```text
+运输成本 = Σ 逐段燃油（升） × 油价
+人工成本 = (行驶 + 等待 + 服务分钟) / 60 × 时薪
+固定成本 = Σ 实际发车车辆的 fixed_cost
+违约成本 = 迟到分钟 × 每分钟罚金
+碳排成本 = Σ 燃油（升） × 2.63 × 碳价
+总成本   = 运输 + 人工 + 固定 + 违约 + 碳排
 ```
 
-### 6. 策略效果评估
-
-```python
-from analysis.strategy_eval import StrategyEvaluator
-
-evaluator = StrategyEvaluator(solver_func, customers, vehicle_config, params)
-
-# 评估多种策略
-result = evaluator.evaluate_strategies(
-    strategies=["fast", "balanced", "thorough"],
-    time_limits=[30, 60, 120],
-    num_runs=3
-)
-
-print(f"推荐策略: {result.best_strategy}")
-print(f"稳定性评分: {result.stability_scores}")
-
-# 生成评估报告
-report = evaluator.generate_evaluation_report(result)
-```
+其中柴油碳排放因子为 **2.63 kg CO₂ / 升**。
 
 ## REST API
 
-### 启动方式
+### 启动
 
-**Windows 双击启动：**
 ```bash
-# 双击 start_api.bat
-```
-
-**命令行启动：**
-```bash
-# 使用高性能启动器
+uvicorn api.main:app --host 0.0.0.0 --port 8000
+# 或
 python start_fast.py api
-python start_fast.py api --port 8001  # 指定端口
-
-# 直接启动
-uvicorn api.main:app --reload --port 8000
 ```
 
-访问 API 文档：http://localhost:8000/docs
-访问 ReDoc 文档：http://localhost:8000/redoc
+API 文档：http://localhost:8000/docs · ReDoc：http://localhost:8000/redoc
+
+开发环境默认 API Key：`green-vrp-default-key-2024`（生产环境必须通过 `API_KEYS` 环境变量覆盖）。
 
 ### 主要接口
 
 | 接口 | 方法 | 描述 |
 |------|------|------|
-| `/api/v1/solve` | POST | 同步求解 VRP |
-| `/api/v1/solve/async` | POST | 异步求解（创建任务） |
+| `/api/v1/solve` | POST | 同步求解 |
+| `/api/v1/solve/async` | POST | 异步求解 |
 | `/api/v1/solve/jobs/{job_id}` | GET | 查询任务状态 |
-| `/api/v1/solve/jobs/{job_id}/result` | GET | 获取求解结果 |
-| `/api/v1/scenarios` | GET | 获取场景列表 |
-| `/api/v1/scenarios` | POST | 创建场景 |
-| `/api/v1/scenarios/{id}` | GET | 获取场景详情 |
-| `/api/v1/scenarios/{id}` | PUT | 更新场景 |
-| `/api/v1/scenarios/{id}` | DELETE | 删除场景 |
+| `/api/v1/solve/jobs/{job_id}/result` | GET | 获取任务结果 |
+| `/api/v1/scenarios` | GET/POST | 场景列表 / 创建 |
+| `/api/v1/scenarios/{id}` | GET/PUT/DELETE | 场景详情 / 更新 / 删除 |
 | `/api/v1/health` | GET | 健康检查 |
 
 ### 示例请求
 
 ```bash
-# 同步求解
 curl -X POST "http://localhost:8000/api/v1/solve" \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: green-vrp-default-key-2024" \
   -d '{
     "customers": [
       {"id": 0, "name": "仓库", "lat": 39.9042, "lon": 116.4074, "demand": 0, "service_time_min": 0, "tw_earliest": 480, "tw_latest": 960},
       {"id": 1, "name": "客户A", "lat": 39.9142, "lon": 116.4174, "demand": 50, "service_time_min": 15, "tw_earliest": 500, "tw_latest": 600}
     ],
+    "vehicle_config": {
+      "4.2m": {"capacity": 800, "fixed_cost": 200, "fuel_per_100km": 12, "speed_kmh": 40, "count": 5, "color": "#1f77b4"}
+    },
     "params": {
       "fuel_price": 7.5,
-      "search_time_limit": 30
+      "hourly_wage": 50,
+      "carbon_price": 0.08,
+      "late_penalty_per_min": 10,
+      "search_time_limit": 45
     }
   }'
-
-# 异步求解
-curl -X POST "http://localhost:8000/api/v1/solve/async" \
-  -H "Content-Type: application/json" \
-  -d '{...}'
-
-# 查询任务状态
-curl "http://localhost:8000/api/v1/jobs/{job_id}"
 ```
 
-## 测试
+## Web 控制台
 
-### 运行测试
+### React 控制台（`web/`）
 
 ```bash
-# 运行所有测试
-pytest tests/
-
-# 运行单元测试
-pytest tests/unit/ -v
-
-# 运行集成测试
-pytest tests/integration/ -v
-
-# 运行特定模块测试
-pytest tests/unit/core/ -v
-pytest tests/unit/optimization/ -v
-pytest tests/unit/tracking/ -v
-pytest tests/unit/analysis/ -v
-
-# 生成覆盖率报告
-pytest --cov=. --cov-report=html --cov-report=term
-
-# 查看覆盖率报告
-# 打开 htmlcov/index.html
+cd web
+npm install
+npm run dev     # http://localhost:3000
+npm run build   # 生产构建
+npm run lint    # oxlint
 ```
 
-### 测试覆盖
+功能：
 
-| 模块 | 测试文件 | 测试用例数 |
-|------|----------|------------|
-| core | test_distance.py, test_cost.py, test_solver.py | ~120 |
-| optimization | test_multi_objective.py, test_carbon_aware.py, test_dynamic.py | ~150 |
-| analysis | test_comparison.py, test_sensitivity.py, test_strategy_eval.py | ~100 |
-| tracking | （计划中） | — |
-| api | test_routers.py, test_schemas.py | ~50 |
+- 碳价、油价、时薪、迟到罚金与求解预算调节。
+- 车辆数量直接输入；载重、发车成本、油耗、速度可编辑。
+- 新增 / 删除自定义车型，车队总数上限 15 辆。
+- 本地演示与 FastAPI 真实引擎双模式，路线地图、五维成本与逐站清单联动。
+- 方案 JSON 导出与 API 连接测试。
 
-总计：约 248 测试函数（51%+ 行覆盖率）
+详见 [web/README.md](web/README.md)。
+
+### Streamlit 界面
+
+```bash
+streamlit run web_app.py          # 标准版
+streamlit run frontend/app.py     # 企业简约版
+```
+
+访问 http://localhost:8501。支持交互地图、成本分析、车辆利用率与参数配置。
+
+## 测试与基准
+
+### 测试
+
+```bash
+# 核心算法与数据模型（本地已验证 255 个用例通过）
+pytest tests/unit/core tests/unit/models tests/unit/optimization tests/unit/utils -q
+
+# 全量测试（CI 安装完整依赖后执行）
+pytest tests/ -q --tb=short --timeout=60
+```
+
+前端校验：
+
+```bash
+npm --prefix web run build
+npm --prefix web run lint
+```
+
+### 100 节点可复现基准
+
+```bash
+# 完整流水线（默认 5×4.2m + 2×7.6m 上限）
+python analysis/benchmark_algorithm.py --mode full --time-limit 30
+
+# 15 辆真实 UI 配置（5×4.2m + 5×7.6m + 5×9.6m 上限）
+python analysis/benchmark_algorithm.py --mode full --fleet web15 --time-limit 30
+
+# 先生成 stage1 缓存（fleet_cap_experiment / iteration_experiment 复用）
+python analysis/benchmark_algorithm.py --mode stage1 --fleet fifteen --stage1-time 30
+
+# 对比 ALNS 参数或车队配置
+python analysis/fleet_cap_experiment.py --iterations 2000 --seeds 42,47,49,60 --workers 8
+python analysis/iteration_experiment.py --iterations 2000,4000,6000 --workers 8
+```
+
+示例结果（100 客户、seed 42、`time_limit=30`）：
+
+| 可用车队上限 | 实际使用 | 总成本 | 距离 |
+|---|---:|---:|---:|
+| 15 辆（10×4.2m + 5×7.6m） | 6×4.2m | 3406.90 | 342.3 km |
+| 15 辆真实 UI（5/5/5） | 5×4.2m + 1×7.6m | 3577.75 | 336.3 km |
+| 7 辆纯 4.2m | 6×4.2m | 3379.94 | 324.1 km |
+
+结果受随机种子与车队配置影响，约 ±1% 波动；以实际运行输出为准。
+
+## 项目结构
+
+```text
+GreenVRP_Engine/
+├── api/                     # FastAPI 应用、路由、请求/响应模型
+├── core/
+│   ├── solver.py            # OR-Tools 求解、双路径精修、ALNS 编排、CP-SAT 配对
+│   ├── cost.py              # 五维成本、载重油耗、时变速度
+│   └── distance.py          # 距离与时间矩阵
+├── optimization/
+│   ├── alns.py              # 自适应大邻域搜索
+│   ├── recombine.py         # 路线池 CP-SAT 集合划分
+│   ├── pair_cpsat.py        # 两车 CP-SAT 精确重排
+│   └── route_optimize.py    # 2-opt、Or-opt、跨路线 VND
+├── utils/
+│   └── time_profile.py      # 时段速度剖线与高峰发车
+├── config/                  # 常量、默认车型、安全配置
+├── analysis/
+│   └── benchmark_algorithm.py  # 可复现 100 节点基准
+├── web/                     # React + Vite 控制台
+├── frontend/                # Streamlit 企业版界面
+├── web_app.py               # Streamlit 标准界面
+├── tests/                   # 单元 / 集成 / 基准测试
+├── 文献/                    # 绿色 VRP 文献清单（PDF 不入库）
+├── requirements.txt
+└── requirements-test.txt
+```
 
 ## 配置参数
 
-### 全局参数
+### 全局参数（`config/constants.py`）
 
 | 参数 | 默认值 | 描述 |
 |------|--------|------|
-| `fuel_price` | 7.5<br/> | 油价（元/升） |
-| `hourly_wage` | 50 | 时薪（元/小时） |
-| `carbon_price` | 0.08 | 碳价（元/kg CO2） |
+| `fuel_price` | 7.5 | 柴油价格（元/升） |
+| `hourly_wage` | 50 | 人工时薪（元/小时） |
+| `carbon_price` | 0.08 | 碳价（元/kg CO₂） |
 | `late_penalty_per_min` | 10 | 迟到罚金（元/分钟） |
 
-### 车型配置
+### 默认车型（`config/vehicles.py`）
 
-| 车型 | 容量(kg) | 固定成本(元) | 油耗(L/100km) | 时速(km/h) |
-|------|----------|--------------|---------------|------------|
-| 4.2m | 800 | 200 | 12 | 40 |
-| 7.6m | 1500 | 350 | 18 | 35 |
-| 9.6m | 2500 | 500 | 25 | 30 |
+| 车型 | 载重(件) | 固定成本(元) | 油耗(L/100km) | 速度(km/h) | 默认可用数 |
+|------|----------|--------------|---------------|------------|------------|
+| 4.2m | 800 | 200 | 12 | 40 | 3 |
+| 7.6m | 1500 | 350 | 18 | 35 | 2 |
+| 9.6m | 2500 | 500 | 25 | 30 | 2 |
 
-## 碳排放计算
-
-系统使用柴油碳排放因子：**2.63 kg CO2 / 升**
-
-```
-碳排放量 (kg CO2) = 油耗 (升) × 2.63
-                 = 行驶距离 (km) × 油耗系数 (L/100km) / 100 × 2.63
-
-碳排放成本 (元) = 碳排放量 (kg CO2) × 碳价 (元/kg)
-```
-
-## 算法特点
-
-### 求解器
-
-- 基于 OR-Tools 约束求解器
-- 支持引导局部搜索（Guided Local Search）
-- 可配置求解时间限制
-- 支持多车型异构车队
-
-### 优化策略
-
-| 策略 | 时间限制 | 适用场景 |
-|------|----------|----------|
-| fast | 30秒 | 快速响应，实时决策 |
-| balanced | 60秒 | 平衡质量与效率 |
-| thorough | 120秒 | 追求最优解 |
-
-### 多目标优化
-
-支持三种多目标优化方法：
-
-1. **加权法** - 将多目标加权求和为单目标
-2. **ε-约束法** - 将部分目标转化为约束条件
-3. **层次法** - 按优先级依次优化各目标
+Web 控制台默认展示 5 / 3 / 2 辆，可直接编辑；`count` 始终是可用上限。
 
 ## 技术栈
 
 | 类别 | 技术 |
 |------|------|
-| 语言 | Python 3.10+ |
-| Web 框架 | FastAPI |
-| 求解器 | OR-Tools |
-| 数据处理 | Pandas, NumPy |
-| 可视化 | Plotly, Folium |
-| 界面 | Streamlit |
-| 测试 | Pytest |
-
-## Web 可视化应用
-
-### 快速启动
-
-**方式一：双击启动（Windows）**
-```bash
-# 双击 start_web.bat 启动标准 Web 界面
-# 双击 run_enterprise_ui.bat 启动企业简约风格界面
-```
-
-**方式二：命令行启动**
-```bash
-# 使用高性能启动器（推荐）
-python start_fast.py              # 交互式选择
-python start_fast.py web          # 启动标准 Web 界面
-python start_fast.py api          # 启动 API 服务
-
-# 使用企业简约风格前端
-python start_enterprise_ui.py
-
-# 使用标准启动器
-python start.py                    web  # 交互式选择
-```
-
-**方式三：直接运行**
-```bash
-# Streamlit Web 界面（标准版本）
-streamlit run web_app.py
-
-# Streamlit Web 界面（企业简约风格）
-streamlit run frontend/app.py
-```
-
-### Web 界面功能
-
-**标准版本 (web_app.py)：**
-- 📍 **交互式路线地图** - Folium 地图可视化，支持缩放、点击查看详情
-- 📊 **五维成本分析** - 饼图展示成本构成，关键指标卡片
-- 📋 **车辆使用情况** - 车型利用率统计，容量分析
-- ⚙️ **参数配置面板** - 经济参数、求解器设置、车型配置
-- 📁 **数据导入导出** - 支持 CSV 格式客户数据导入
-
-**企业简约风格 (frontend/app.py)：**
-- 📊 **仪表板** - 实时状态监控、关键指标展示、求解进度跟踪
-- 🗺️ **路线规划** - 交互式地图、路线统计、车辆轨迹展示
-- 💰 **成本分析** - 五维成本核算、成本结构、碳排放分析、效率指标
-- 📈 **对比分析** - 多方案对比、性能指标对比、碳排放对比
-
-访问地址：http://localhost:8501
-
-## 开发指南
-
-### 代码规范
-
-- 遵循 PEP 8 编码规范
-- 使用类型注解
-- 编写中文注释和文档字符串
-- 单元测试覆盖核心功能
-
-### 提交代码
-
-```bash
-# 运行测试
-pytest tests/
-
-# 检查代码风格
-flake8 .
-
-# 提交
-git add .
-git commit -m "feat: 添加新功能"
-git push
-```
+| 语言 | Python 3.11+ / TypeScript |
+| 求解器 | OR-Tools Routing + CP-SAT |
+| API | FastAPI + Pydantic |
+| 数据处理 | Pandas / NumPy |
+| Web 控制台 | React 19 + Vite + Tailwind CSS |
+| Streamlit 界面 | Streamlit + Plotly + Folium |
+| 测试 | Pytest / oxlint / tsc |
 
 ## 路线图
 
-- [x] 核心 VRP 求解器
-- [x] 五维成本核算
-- [x] 碳感知优化
-- [x] 动态需求响应
-- [x] REST API 接口
-- [x] 实时位置追踪
-- [ ] 机器学习需求预测
+- [x] 核心 VRPTW 求解与五维成本
+- [x] 载重相关油耗与时变速度
+- [x] 多种子 ALNS、路线池重组、CP-SAT 配对精修
+- [x] 车队数量上限语义与自定义车型
+- [x] React Web 控制台与可复现基准
+- [x] REST API 与场景管理
+- [ ] 实时位置追踪
 - [ ] 多仓库支持
 - [ ] 电动车辆充电规划
+- [ ] 机器学习需求预测
 
 ## 相关文档
 
-- [README.md](README.md) - 项目主文档
-- [QUICKSTART.md](QUICKSTART.md) - 快速开始指南
-- [ARCHITECTURE.md](ARCHITECTURE.md) - 架构文档
-- [DEVELOPER.md](DEVELOPER.md) - 开发者指南
-- [CHANGELOG.md](CHANGELOG.md) - 更新日志
+- [QUICKSTART.md](QUICKSTART.md) — 快速开始
+- [ARCHITECTURE.md](ARCHITECTURE.md) — 架构说明
+- [DEVELOPER.md](DEVELOPER.md) — 开发者指南
+- [SECURITY.md](SECURITY.md) — 安全与密钥配置
+- [CHANGELOG.md](CHANGELOG.md) — 更新日志
+- [web/README.md](web/README.md) — Web 控制台
+- [文献/文献清单.md](文献/文献清单.md) — 绿色 VRP 文献清单
+- [文献/文献清单.csv](文献/文献清单.csv) — 文献表格
 
 ## 许可证
 
@@ -572,16 +407,18 @@ MIT License
 
 ## 致谢
 
-- [OR-Tools](https://developers.google.com/optimization) - Google 优化工具包
-- [FastAPI](https://fastapi.tiangolo.com/) - 现代高性能 Web 框架
-- [Streamlit](https://streamlit.io/) - 交互式 Web 应用框架
-- [Folium](https://python-visualization.github.io/folium/) - 地图可视化库
+- [OR-Tools](https://developers.google.com/optimization)
+- [FastAPI](https://fastapi.tiangolo.com/)
+- [React](https://react.dev/)
+- [Streamlit](https://streamlit.io/)
+- [Plotly](https://plotly.com/python/)
+- [Folium](https://python-visualization.github.io/folium/)
 
 ## 联系方式
 
-- 项目主页: https://github.com/your-org/green-vrp-engine
-- 问题反馈: https://github.com/your-org/green-vrp-engine/issues
+- 仓库：https://github.com/WDQ-CN/GreenVRP_Engine
+- 问题反馈：https://github.com/WDQ-CN/GreenVRP_Engine/issues
 
 ---
 
-**让物流更绿色，让配送更高效** 🌍
+**让物流更绿色，让配送更高效。**
