@@ -38,6 +38,13 @@ build/
 target/
 *.egg-info/
 
+# Algorithm benchmark artifacts
+analysis/benchmark_artifacts/
+
+# Literature PDFs and Office lock files (keep the reading list itself)
+文献/*.pdf
+文献/.qoder-office-csv-locks/
+
 # Test & quality cache
 .pytest_cache/
 .mypy_cache/

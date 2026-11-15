@@ -21,6 +21,12 @@ VEHICLE_CARBON_BASELINE: Dict[str, float] = {
     "9.6m": 16.0,
 }
 
+# 载重相关油耗模型：fuel_per_100km 作为 50% 载重基准
+# 空载 = 0.75×，满载 = 1.25×，中间线性插值
+FUEL_EMPTY_LOAD_RATIO: float = 0.75
+FUEL_FULL_LOAD_RATIO: float = 1.25
+DEFAULT_LOAD_RATIO: float = 0.5
+
 
 # ==================== 默认参数 ====================
 

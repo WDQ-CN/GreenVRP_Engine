@@ -23,9 +23,13 @@ import copy
 from typing import Any, Dict, List, Optional, Tuple
 
 from utils.geo import haversine_distance, route_distance_km
+from utils.time_profile import travel_time_minutes
 from logging_config import get_logger
 
 logger = get_logger("green_vrp.route_optimize")
+
+# 路线间 Relocate/Exchange 为 O(n²·m) 搜索，大规模问题代价过高，仅做逐路线 2-opt。
+MAX_INTER_ROUTE_STOPS = 60
 
 
 def two_opt_swap(
@@ -71,17 +75,20 @@ def calculate_route_distance(stops: List[Dict[str, Any]]) -> float:
 
 
 def calculate_arrival_times(
-    stops: List[Dict[str, Any]], speed_kmh: float
+    stops: List[Dict[str, Any]],
+    speed_kmh: float,
+    start_time: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
     给定车速，计算路线中各站点的到达时间。
 
-    从仓库出发（arrival_time = 最早时间窗），
+    从仓库出发（默认取仓库最早时间窗），
     依次累加行驶时间和服务时间得到下一站到达时间。
 
     Args:
         stops: 站点列表（需包含 lat, lon, service_time, tw_earliest）
         speed_kmh: 车速（公里/小时）
+        start_time: 车辆出发时刻；None 时使用仓库最早时间窗
 
     Returns:
         填充了 arrival_time 和 departure_time 的站点列表副本
@@ -91,8 +98,9 @@ def calculate_arrival_times(
 
     result = copy.deepcopy(stops)
 
-    # 仓库出发时间 = 最早时间窗（如果没有则设为 0）
-    current_time = result[0].get("tw_earliest", 480)
+    current_time = start_time
+    if current_time is None:
+        current_time = result[0].get("tw_earliest", 480)
     if current_time is None:
         current_time = 480
     result[0]["arrival_time"] = current_time
@@ -102,16 +110,19 @@ def calculate_arrival_times(
         prev = result[idx - 1]
         curr = result[idx]
 
-        # 计算从上一站到本站的行驶时间（分钟）
+        # 计算从上一站到本站的时变行驶时间（分钟）
         dist_km = haversine_distance(
             prev["lat"], prev["lon"],
             curr["lat"], curr["lon"],
         )
-        travel_time_min = (dist_km / speed_kmh) * 60
+        prev_departure = prev.get("departure_time", prev.get("arrival_time", 0))
+        travel_time_min = travel_time_minutes(
+            dist_km, prev_departure, speed_kmh
+        )
 
         # 到达时间 = 上一站离开时间 + 行驶时间
-        prev_departure = prev.get("departure_time", prev.get("arrival_time", 0))
         arrival = prev_departure + travel_time_min
+        curr["raw_arrival_time"] = int(arrival)
 
         # 如果早于最早时间窗，需要等待
         tw_earliest = curr.get("tw_earliest")
@@ -153,6 +164,50 @@ def check_time_window_feasibility(
     return True
 
 
+def refresh_route_timing(
+    route: Dict[str, Any],
+    vehicle_config: Dict[str, Any],
+) -> int:
+    """按当前站点顺序重算到达/离开时间、迟到分钟与路线总时长。"""
+    stops = route.get("stops", [])
+    if not stops:
+        return 0
+
+    vehicle_type = route.get("vehicle_type", "4.2m")
+    speed_kmh = vehicle_config.get(vehicle_type, {}).get("speed_kmh", 40)
+    start_time = stops[0].get("arrival_time")
+    timed_stops = calculate_arrival_times(stops, speed_kmh, start_time=start_time)
+
+    total_late = 0
+    for stop in timed_stops:
+        node = stop.get("node", -1)
+        if node == 0:
+            stop["late_minutes"] = 0
+            stop["is_late"] = False
+            continue
+        latest = stop.get("tw_latest")
+        arrival = stop.get("arrival_time")
+        late = (
+            max(0.0, arrival - latest)
+            if latest is not None and arrival is not None
+            else 0.0
+        )
+        stop["late_minutes"] = int(late)
+        stop["is_late"] = late > 0
+        total_late += late
+
+    route["stops"] = timed_stops
+    route["distance_km"] = round(calculate_route_distance(timed_stops), 2)
+    route["total_demand"] = sum(
+        stop.get("demand", 0) for stop in timed_stops if stop.get("node", -1) != 0
+    )
+    start = timed_stops[0].get("arrival_time", 0)
+    end = timed_stops[-1].get("arrival_time", start)
+    route["total_time_min"] = max(0, int(end - start))
+    route["late_minutes"] = int(total_late)
+    return int(total_late)
+
+
 def optimize_single_route(
     stops: List[Dict[str, Any]],
     speed_kmh: float,
@@ -192,6 +247,7 @@ def optimize_single_route(
     best_distance = original_distance
     iterations = 0
     improved = True
+    start_time = stops[0].get("arrival_time")
 
     n = len(best_stops)
 
@@ -207,7 +263,9 @@ def optimize_single_route(
                 if new_distance >= best_distance - 1e-6:
                     continue
 
-                timed_stops = calculate_arrival_times(new_stops, speed_kmh)
+                timed_stops = calculate_arrival_times(
+                    new_stops, speed_kmh, start_time=start_time
+                )
                 if not check_time_window_feasibility(timed_stops):
                     continue
 
@@ -218,26 +276,20 @@ def optimize_single_route(
 
         # === Phase 2: Or-opt 平移 (k=2,3) ===
         for k in (2, 3):
-            for i in range(1, n - k):  # 子段起点
-                for j in range(1, n):  # 目标位置
-                    # 跳过子段自身范围
-                    if i <= j < i + k:
-                        continue
-
-                    # Or-opt 平移：将 stops[i:i+k] 移动到 j 位置
-                    segment = best_stops[i:i + k]
-                    remaining = best_stops[:i] + best_stops[i + k:]
-                    if j < i:
-                        new_stops = remaining[:j] + segment + remaining[j:]
-                    else:
-                        # j >= i + k
-                        new_stops = remaining[:j] + segment + remaining[j:]
+            for i in range(1, n - k):  # 客户段起点，不能包含返程仓库
+                segment = best_stops[i:i + k]
+                remaining = best_stops[:i] + best_stops[i + k:]
+                # 插入位置只能在起点仓库之后、返程仓库之前
+                for j in range(1, len(remaining)):
+                    new_stops = remaining[:j] + segment + remaining[j:]
 
                     new_distance = calculate_route_distance(new_stops)
                     if new_distance >= best_distance - 1e-6:
                         continue
 
-                    timed_stops = calculate_arrival_times(new_stops, speed_kmh)
+                    timed_stops = calculate_arrival_times(
+                        new_stops, speed_kmh, start_time=start_time
+                    )
                     if not check_time_window_feasibility(timed_stops):
                         continue
 
@@ -245,7 +297,6 @@ def optimize_single_route(
                     best_distance = new_distance
                     improved = True
                     iterations += 1
-                    n = len(best_stops)  # n 不变，路线长度变化不影响
 
     return {
         "stops": best_stops,
@@ -282,7 +333,11 @@ def _best_insert_position(
     for i in range(1, len(stops)):
         new_stops = stops[:i] + [customer_stop] + stops[i:]
         # 检查时间窗
-        timed = calculate_arrival_times(new_stops, speed_kmh)
+        timed = calculate_arrival_times(
+            new_stops,
+            speed_kmh,
+            start_time=stops[0].get("arrival_time") if stops else None,
+        )
         if not check_time_window_feasibility(timed):
             continue
         dist = calculate_route_distance(new_stops)
@@ -344,7 +399,11 @@ def relocate_between_routes(
 
         # 计算搬迁后的 route_a 距离
         new_stops_a = stops_a[:idx] + stops_a[idx + 1 :]
-        timed_a = calculate_arrival_times(new_stops_a, speed_a)
+        timed_a = calculate_arrival_times(
+            new_stops_a,
+            speed_a,
+            start_time=stops_a[0].get("arrival_time") if stops_a else None,
+        )
         if not check_time_window_feasibility(timed_a):
             continue
         new_dist_a = calculate_route_distance(new_stops_a)
@@ -534,14 +593,28 @@ def post_process_solution(
                 result["iterations"],
             )
 
-    # === 第二阶段：路线间 Relocate ===
-    logger.info("开始路线间 Relocate 优化...")
-    relocate_improved = _run_relocate_phase(optimized, vehicle_config)
+    total_customer_stops = sum(
+        1
+        for route in optimized["routes"]
+        for stop in route.get("stops", [])
+        if stop.get("node", -1) != 0
+    )
 
-    # === 第三阶段：路线间 Exchange ===
-    if relocate_improved:
-        logger.info("开始路线间 Exchange 优化...")
-        _run_exchange_phase(optimized, vehicle_config)
+    if total_customer_stops <= MAX_INTER_ROUTE_STOPS:
+        # === 第二阶段：路线间 Relocate ===
+        logger.info("开始路线间 Relocate 优化...")
+        relocate_improved = _run_relocate_phase(optimized, vehicle_config)
+
+        # === 第三阶段：路线间 Exchange ===
+        if relocate_improved:
+            logger.info("开始路线间 Exchange 优化...")
+            _run_exchange_phase(optimized, vehicle_config)
+    else:
+        logger.info(
+            "客户站点数 %d 超过 %d，跳过路线间 Relocate/Exchange",
+            total_customer_stops,
+            MAX_INTER_ROUTE_STOPS,
+        )
 
     # 清理空路线（至少有一个客户站点）
     optimized["routes"] = [
@@ -549,7 +622,12 @@ def post_process_solution(
         if any(s.get("node", -1) != 0 for s in r.get("stops", []))
     ]
 
-    # 重新计算总距离
+    # 重算后处理后的时间、迟到、里程和路线时长
+    total_late = 0
+    for route in optimized["routes"]:
+        total_late += refresh_route_timing(route, vehicle_config)
+    optimized["total_late_minutes"] = int(total_late)
+
     total_km = sum(r.get("distance_km", 0.0) for r in optimized["routes"])
     optimized["total_distance"] = round(total_km, 2)
     optimized["vehicles_used"] = _count_vehicles_used(

@@ -34,7 +34,13 @@ class VehicleConfigItem(BaseModel):
 
     capacity: int = Field(..., ge=0, description="载重容量（件）")
     fixed_cost: float = Field(..., ge=0, description="发车成本（元）")
-    fuel_per_100km: float = Field(..., ge=0, description="百公里油耗（升）")
+    fuel_per_100km: float = Field(..., ge=0, description="百公里油耗（升，50% 载重基准）")
+    fuel_empty_per_100km: Optional[float] = Field(
+        default=None, ge=0, description="空载百公里油耗（升），留空按 0.75×fuel_per_100km"
+    )
+    fuel_full_per_100km: Optional[float] = Field(
+        default=None, ge=0, description="满载百公里油耗（升），留空按 1.25×fuel_per_100km"
+    )
     speed_kmh: float = Field(..., gt=0, description="平均速度（km/h）")
     count: int = Field(..., ge=0, description="可用数量")
     color: str = Field(default="#1f77b4", description="显示颜色")

@@ -391,6 +391,7 @@ def main():
                         vehicle_config=vehicle_config,
                         time_penalty_per_min=params["late_penalty_per_min"],
                         time_limit=params["search_time_limit"],
+                        cost_params=params,
                     )
                 except Exception as e:
                     st.warning(f"并行求解失败，回退到串行模式: {e}")
@@ -399,6 +400,7 @@ def main():
                         vehicle_config=vehicle_config,
                         time_penalty_per_min=params["late_penalty_per_min"],
                         time_limit=params["search_time_limit"],
+                        cost_params=params,
                     )
             elif use_multi_strategy:
                 # 串行多策略求解
@@ -407,6 +409,7 @@ def main():
                     vehicle_config=vehicle_config,
                     time_penalty_per_min=params["late_penalty_per_min"],
                     time_limit=params["search_time_limit"],
+                    cost_params=params,
                 )
             else:
                 # 单策略求解
@@ -415,6 +418,8 @@ def main():
                     vehicle_config=vehicle_config,
                     time_penalty_per_min=params["late_penalty_per_min"],
                     search_time_limit=params["search_time_limit"],
+                    fuel_price=params["fuel_price"],
+                    carbon_price=params["carbon_price"],
                 )
                 solution = solver.solve()
 

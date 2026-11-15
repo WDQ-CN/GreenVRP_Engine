@@ -4,6 +4,7 @@
 提供多目标优化、动态需求响应、碳感知路由、2-opt 后处理等高级优化功能。
 """
 
+from .alns import improve_solution_with_alns
 from .carbon_aware import (
     CarbonAwareOptimizer,
     CarbonEfficiencyReport,
@@ -25,6 +26,7 @@ from .route_optimize import (
     relocate_between_routes,
     two_opt_swap,
 )
+from .recombine import recombine_route_pool
 
 __all__ = [
     "MultiObjectiveOptimizer",
@@ -40,4 +42,6 @@ __all__ = [
     "post_process_solution",
     "relocate_between_routes",
     "exchange_between_routes",
+    "improve_solution_with_alns",
+    "recombine_route_pool",
 ]

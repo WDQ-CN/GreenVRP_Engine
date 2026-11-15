@@ -29,6 +29,7 @@ from .distance import (
 from .solver import (
     DEFAULT_VEHICLE_CONFIG,
     GreenVRPSolver,
+    refine_solution_with_load_ratios,
     solve_with_multiple_strategies,
     solve_with_multiple_strategies_parallel,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "DistanceMatrixCache",
     # 求解器
     "GreenVRPSolver",
+    "refine_solution_with_load_ratios",
     "solve_with_multiple_strategies",
     "solve_with_multiple_strategies_parallel",
     "DEFAULT_VEHICLE_CONFIG",

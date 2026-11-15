@@ -7,6 +7,8 @@ from pytest import approx
 
 from core.cost import (
     _build_vehicle_params,
+    _calc_route_fuel_liters,
+    _fuel_per_100km_at_load,
     _get_vehicle_params_cached,
     calculate_cost_efficiency_metrics,
     calculate_green_cost,
@@ -40,6 +42,40 @@ class TestBuildVehicleParams:
         assert result["4.2m"].speed_kmh == 40
 
 
+class TestLoadDependentFuel:
+    """载重相关油耗：空载 0.75×、满载 1.25×、50% 载重为额定值。"""
+
+    @staticmethod
+    def _route(demand: int) -> dict:
+        return {
+            "vehicle_type": "4.2m",
+            "capacity": 800,
+            "distance_km": 2.0,
+            "stops": [
+                {"node": 0, "lat": 39.90, "lon": 116.40, "demand": 0,
+                 "service_time": 0},
+                {"node": 1, "lat": 39.91, "lon": 116.40, "demand": demand,
+                 "service_time": 15},
+                {"node": 0, "lat": 39.90, "lon": 116.40, "demand": 0,
+                 "service_time": 0},
+            ],
+        }
+
+    def test_fuel_scales_between_empty_and_full(self):
+        params = _build_vehicle_params(get_test_vehicle_config())["4.2m"]
+        assert params.fuel_empty_per_100km == approx(9.0)
+        assert params.fuel_full_per_100km == approx(15.0)
+        assert _fuel_per_100km_at_load(params, 0.0) == approx(9.0)
+        assert _fuel_per_100km_at_load(params, 0.5) == approx(12.0)
+        assert _fuel_per_100km_at_load(params, 1.0) == approx(15.0)
+
+    def test_partial_load_uses_less_fuel(self):
+        params = _build_vehicle_params(get_test_vehicle_config())["4.2m"]
+        partial = _calc_route_fuel_liters(self._route(400), params)
+        full = _calc_route_fuel_liters(self._route(800), params)
+        assert 0 < partial < full
+
+
 class TestCalculateGreenCost:
     def test_minimal_solution(self):
         result = calculate_green_cost(
@@ -70,6 +106,20 @@ class TestCalculateGreenCost:
             get_solution_with_late_customer(), get_test_vehicle_config(), get_test_params()
         )
         assert result["penalty_cost"] == approx(500.0)  # 50 min * 10
+
+    def test_waiting_time_uses_raw_arrival(self):
+        """等待时间应按扣除等待前的原始到达时刻计算。"""
+        solution = get_minimal_solution()
+        customer = solution["routes"][0]["stops"][1]
+        customer["tw_earliest"] = 520
+        customer["raw_arrival_time"] = 480
+        customer["arrival_time"] = 520  # 服务开始时刻（等待后）
+
+        result = calculate_green_cost(
+            solution, get_test_vehicle_config(), get_test_params()
+        )
+
+        assert result["waiting_time_min"] == approx(40.0)
 
     def test_empty_solution(self):
         result = calculate_green_cost(

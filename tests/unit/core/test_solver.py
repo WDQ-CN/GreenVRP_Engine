@@ -2,13 +2,26 @@
 单元测试：core/solver.py — SolverInstancePool, CallbackCache 和核心求解方法
 """
 
+import copy
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
 import pytest
+from ortools.constraint_solver import routing_enums_pb2
 
-from core.solver import CallbackCache, GreenVRPSolver, SolverInstancePool
+from config.constants import DIESEL_CO2_FACTOR
+from utils.time_profile import average_speed_multiplier, fuel_speed_factor
+from core.solver import (
+    CallbackCache,
+    GreenVRPSolver,
+    SolverInstancePool,
+    _effective_vehicle_load_ratios,
+    _fleet_capacity,
+    _solution_fits_fleet,
+    _try_fleet_reduction,
+    refine_solution_with_load_ratios,
+)
 from exceptions.errors import SolverError
 from tests.fixtures.customers import (
     get_invalid_customers_df,
@@ -242,10 +255,17 @@ class TestGreenVRPSolverSolve:
             result = solver.solve()
 
             # 验证调用了关键 OR-Tools 方法
-            assert mock_instance.SetArcCostEvaluatorOfAllVehicles.called
+            assert mock_instance.SetArcCostEvaluatorOfVehicle.called
+            assert mock_instance.SetFixedCostOfVehicle.called
             assert mock_instance.AddDimensionWithVehicleCapacity.called
             assert mock_instance.AddDimensionWithVehicleTransits.called
             assert mock_instance.SolveWithParameters.called
+
+            fixed_costs = [
+                call.args[0]
+                for call in mock_instance.SetFixedCostOfVehicle.call_args_list
+            ]
+            assert 20000 in fixed_costs  # 4.2m: 200 元 -> 20000 分
 
     @patch("core.solver.pywrapcp.RoutingModel")
     @patch("core.solver.pywrapcp.RoutingIndexManager")
@@ -377,6 +397,172 @@ class TestGreenVRPSolverAdaptiveSearchParams:
         params = solver._get_adaptive_search_params(100)
         assert params.time_limit.seconds >= 30
 
+    def test_large_problem_does_not_use_sweep(self):
+        """SWEEP 在异构车队上需要额外 arranger，大/超大规模改用插入策略。"""
+        df = get_test_customers_df()
+        solver = GreenVRPSolver(df, get_test_vehicle_config())
+
+        for size in (100, 300):
+            params = solver._get_adaptive_search_params(size)
+            assert (
+                params.first_solution_strategy
+                != routing_enums_pb2.FirstSolutionStrategy.SWEEP
+            )
+            assert (
+                params.first_solution_strategy
+                == routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION
+            )
+
+
+class TestServiceTimeAndRouteExtraction:
+    """服务时间进入时间维度，且空路线不计入车辆使用。"""
+
+    @staticmethod
+    def _customers() -> pd.DataFrame:
+        return pd.DataFrame([
+            {"id": 0, "name": "仓", "lat": 39.90, "lon": 116.40, "demand": 0,
+             "service_time_min": 0, "tw_earliest": 480, "tw_latest": 1080},
+            {"id": 1, "name": "A", "lat": 39.91, "lon": 116.40, "demand": 10,
+             "service_time_min": 60, "tw_earliest": 480, "tw_latest": 520},
+            {"id": 2, "name": "B", "lat": 39.92, "lon": 116.40, "demand": 10,
+             "service_time_min": 60, "tw_earliest": 480, "tw_latest": 520},
+        ])
+
+    @staticmethod
+    def _vehicles() -> dict:
+        return {
+            "4.2m": {
+                "capacity": 100,
+                "fixed_cost": 200,
+                "fuel_per_100km": 12,
+                "speed_kmh": 40,
+                "count": 4,
+                "color": "#84cc16",
+            }
+        }
+
+    def test_time_callback_includes_service_time(self):
+        solver = GreenVRPSolver(self._customers(), self._vehicles())
+        solver._setup_solver()
+        callback = solver._create_time_callback(0)
+
+        from_index = solver.manager.NodeToIndex(1)
+        to_index = solver.manager.NodeToIndex(2)
+        travel = solver._get_time_matrix(solver.vehicles[0]["speed_kmh"])[1][2]
+        assert callback(from_index, to_index) == travel + 60
+
+    def test_service_time_forces_extra_vehicle_and_filters_empty_routes(self):
+        """一辆车无法在 60 分钟服务后赶上第二个时间窗，必须启用两辆车。"""
+        solver = GreenVRPSolver(
+            self._customers(), self._vehicles(), search_time_limit=2
+        )
+        result = solver.solve()
+
+        assert result["solution_status"] == "SUCCESS"
+        assert len(result["routes"]) == 2
+        assert sum(result["vehicles_used"].values()) == 2
+        assert result["total_late_minutes"] == 0
+
+        for route in result["routes"]:
+            assert [stop["node"] for stop in route["stops"]][-1] == 0
+            assert "arrival_time" in route["stops"][-1]
+            assert any(stop["node"] != 0 for stop in route["stops"][1:-1])
+
+
+class TestObjectiveCosts:
+    """碳价和迟到罚金必须进入 OR-Tools 目标函数。"""
+
+    @staticmethod
+    def _customers() -> pd.DataFrame:
+        return pd.DataFrame([
+            {"id": 0, "name": "仓", "lat": 39.90, "lon": 116.40, "demand": 0,
+             "service_time_min": 0, "tw_earliest": 480, "tw_latest": 1080},
+            {"id": 1, "name": "A", "lat": 39.91, "lon": 116.40, "demand": 10,
+             "service_time_min": 15, "tw_earliest": 480, "tw_latest": 720},
+            {"id": 2, "name": "B", "lat": 39.92, "lon": 116.40, "demand": 10,
+             "service_time_min": 15, "tw_earliest": 480, "tw_latest": 720},
+        ])
+
+    @staticmethod
+    def _vehicles() -> dict:
+        return {
+            "4.2m": {
+                "capacity": 100,
+                "fixed_cost": 200,
+                "fuel_per_100km": 12,
+                "speed_kmh": 40,
+                "count": 2,
+                "color": "#84cc16",
+            }
+        }
+
+    def test_arc_cost_includes_fuel_and_carbon(self):
+        solver = GreenVRPSolver(
+            self._customers(),
+            self._vehicles(),
+            fuel_price=7.5,
+            carbon_price=0.24,
+        )
+        cost_per_km = solver._vehicle_cost_per_km_cents(0)
+        speed_factor = fuel_speed_factor(average_speed_multiplier())
+        assert cost_per_km == pytest.approx(
+            12 * (7.5 + DIESEL_CO2_FACTOR * 0.24) * speed_factor
+        )
+
+        solver._setup_solver()
+        callback = solver._create_cost_callback(0)
+        from_index = solver.manager.NodeToIndex(1)
+        to_index = solver.manager.NodeToIndex(2)
+        distance_km = solver.distance_matrix[1][2] / 1000.0
+        assert callback(from_index, to_index) == round(distance_km * cost_per_km)
+
+    def test_carbon_price_changes_arc_cost(self):
+        low = GreenVRPSolver(
+            self._customers(), self._vehicles(), carbon_price=0.08
+        )
+        high = GreenVRPSolver(
+            self._customers(), self._vehicles(), carbon_price=0.24
+        )
+        assert high._vehicle_cost_per_km_cents(0) > low._vehicle_cost_per_km_cents(0)
+
+    def test_late_penalty_is_converted_to_cents(self):
+        solver = GreenVRPSolver(
+            self._customers(), self._vehicles(), time_penalty_per_min=24
+        )
+        assert solver._late_penalty_cents() == 2400
+
+    def test_representative_load_interpolates_empty_and_full_fuel(self):
+        config = self._vehicles()
+        config["4.2m"]["fuel_empty_per_100km"] = 8
+        config["4.2m"]["fuel_full_per_100km"] = 20
+        solver = GreenVRPSolver(self._customers(), config)
+        expected_fuel = 8 + (20 - 8) * 0.5  # 50% 代表载重 -> 14 L/100km
+        speed_factor = fuel_speed_factor(average_speed_multiplier())
+        expected_cost = expected_fuel * (7.5 + DIESEL_CO2_FACTOR * 0.08) * speed_factor
+        assert solver._vehicle_cost_per_km_cents(0) == pytest.approx(expected_cost)
+
+    def test_vehicle_load_ratios_override_representative_load(self):
+        config = {
+            "4.2m": {
+                "capacity": 100,
+                "fixed_cost": 200,
+                "fuel_per_100km": 12,
+                "fuel_empty_per_100km": 8,
+                "fuel_full_per_100km": 20,
+                "speed_kmh": 40,
+                "count": 2,
+                "color": "#84cc16",
+            }
+        }
+        solver = GreenVRPSolver(
+            self._customers(), config, vehicle_load_ratios=[1.0, 0.0]
+        )
+        unit_cost = (
+            7.5 + DIESEL_CO2_FACTOR * 0.08
+        ) * fuel_speed_factor(average_speed_multiplier())
+        assert solver._vehicle_cost_per_km_cents(0) == pytest.approx(20 * unit_cost)
+        assert solver._vehicle_cost_per_km_cents(1) == pytest.approx(8 * unit_cost)
+
     def test_difficulty_factor(self):
         df = get_test_customers_df()
         solver = GreenVRPSolver(df, get_test_vehicle_config())
@@ -388,6 +574,106 @@ class TestGreenVRPSolverAdaptiveSearchParams:
         solver = GreenVRPSolver(df, get_test_vehicle_config())
         params = solver._get_adaptive_search_params(300)
         assert params.time_limit.seconds >= 120
+
+
+class TestTwoStageLoadRefinement:
+    """两阶段载重感知优化。"""
+
+    @staticmethod
+    def _config() -> dict:
+        return {
+            "4.2m": {
+                "capacity": 800,
+                "fixed_cost": 200,
+                "fuel_per_100km": 12,
+                "speed_kmh": 40,
+                "count": 2,
+                "color": "#84cc16",
+            }
+        }
+
+    @staticmethod
+    def _stage1() -> dict:
+        return {
+            "solution_status": "SUCCESS",
+            "total_distance": 2.22,
+            "total_late_minutes": 0,
+            "vehicles_used": {"4.2m": 1},
+            "solve_time_seconds": 1.0,
+            "routes": [{
+                "vehicle_id": 0,
+                "vehicle_type": "4.2m",
+                "capacity": 800,
+                "stops": [
+                    {"node": 0, "lat": 39.90, "lon": 116.40, "demand": 0},
+                    {"node": 1, "lat": 39.91, "lon": 116.40, "demand": 400},
+                    {"node": 0, "lat": 39.90, "lon": 116.40, "demand": 0},
+                ],
+            }],
+        }
+
+    def test_effective_load_ratio_is_distance_weighted(self):
+        ratios = _effective_vehicle_load_ratios(self._stage1(), self._config())
+        assert len(ratios) == 2
+        assert ratios[0] == pytest.approx(0.25)  # 去程 0.5、返程 0
+        assert ratios[1] == pytest.approx(0.5)   # 未使用车辆默认值
+
+    def test_refinement_uses_load_ratios_and_keeps_cheaper(self):
+        stage1 = self._stage1()
+        stage2 = copy.deepcopy(stage1)
+        stage2["solve_time_seconds"] = 2.0
+
+        with patch("core.solver.GreenVRPSolver") as solver_cls, patch(
+            "core.solver._get_route_optimizer",
+            return_value=lambda solution, config: solution,
+        ), patch(
+            "core.solver._solution_total_cost", side_effect=[100.0, 90.0]
+        ):
+            solver_cls.return_value.solve_with_params.return_value = stage2
+            result = refine_solution_with_load_ratios(
+                stage1,
+                get_test_customers_df(),
+                self._config(),
+                time_penalty_per_min=10,
+                fuel_price=7.5,
+                carbon_price=0.08,
+                time_limit=30,
+                cost_params={},
+                use_alns=False,
+            )
+
+        assert result is stage2
+        assert result["solve_time_seconds"] == 3.0
+        assert solver_cls.call_args.kwargs["vehicle_load_ratios"] == pytest.approx(
+            [0.25, 0.5]
+        )
+
+    def test_refinement_keeps_stage1_when_not_cheaper(self):
+        stage1 = self._stage1()
+        stage2 = copy.deepcopy(stage1)
+        stage2["solve_time_seconds"] = 2.0
+
+        with patch("core.solver.GreenVRPSolver") as solver_cls, patch(
+            "core.solver._get_route_optimizer",
+            return_value=lambda solution, config: solution,
+        ), patch(
+            "core.solver._solution_total_cost", side_effect=[90.0, 100.0]
+        ):
+            solver_cls.return_value.solve_with_params.return_value = stage2
+            result = refine_solution_with_load_ratios(
+                stage1,
+                get_test_customers_df(),
+                self._config(),
+                time_penalty_per_min=10,
+                fuel_price=7.5,
+                carbon_price=0.08,
+                time_limit=30,
+                cost_params={},
+                use_alns=False,
+            )
+
+        assert result is stage1
+        assert result["solve_time_seconds"] == 3.0
 
 
 class TestDefaultStrategies:
@@ -472,6 +758,75 @@ class TestSelectBestSolution:
             {"solution_status": "NO_SOLUTION_FOUND", "total_distance": 80},
         ]
         assert _select_best_solution(solutions) is None
+
+
+class TestFleetReduction:
+    """车队缩减候选的容量与触发条件。"""
+
+    def test_fleet_capacity(self):
+        config = get_test_vehicle_config()
+        expected = 800 * 3 + 1500 * 2
+        assert _fleet_capacity(config) == expected
+
+    def test_solution_fits_fleet_limits_types_and_counts(self):
+        config = get_test_vehicle_config()
+        solution = {
+            "routes": [
+                {"vehicle_type": "4.2m", "vehicle_id": 0},
+                {"vehicle_type": "4.2m", "vehicle_id": 1},
+                {"vehicle_type": "4.2m", "vehicle_id": 2},
+                {"vehicle_type": "4.2m", "vehicle_id": 3},
+                {"vehicle_type": "7.6m", "vehicle_id": 4},
+            ]
+        }
+        assert _solution_fits_fleet(solution, config) is False
+        solution["routes"].pop(0)
+        assert _solution_fits_fleet(solution, config) is True
+        solution["routes"].append(
+            {"vehicle_type": "7.6m", "vehicle_id": 4}
+        )
+        assert _solution_fits_fleet(solution, config) is False
+
+    def test_skips_small_instance(self):
+        """小规模实例不触发车队缩减求解。"""
+        result = _try_fleet_reduction(
+            {"vehicles_used": {"4.2m": 3, "7.6m": 2}},
+            get_test_customers_df(),
+            get_test_vehicle_config(),
+            time_penalty_per_min=10,
+            fuel_price=7.5,
+            carbon_price=0.08,
+            time_limit=30,
+            cost_params={"late_penalty_per_min": 10},
+        )
+        assert result == []
+
+    def test_skips_when_not_all_vehicles_used(self):
+        """仍有闲置车辆时不触发缩减求解。"""
+        rows = 21
+        customers = pd.DataFrame(
+            {
+                "id": range(rows),
+                "name": ["仓库"] + [f"客户{i}" for i in range(1, rows)],
+                "lat": [39.9] * rows,
+                "lon": [116.4] * rows,
+                "demand": [0] + [10] * (rows - 1),
+                "service_time_min": [0] * rows,
+                "tw_earliest": [480] * rows,
+                "tw_latest": [960] * rows,
+            }
+        )
+        result = _try_fleet_reduction(
+            {"vehicles_used": {"4.2m": 1, "7.6m": 1}},
+            customers,
+            get_test_vehicle_config(),
+            time_penalty_per_min=10,
+            fuel_price=7.5,
+            carbon_price=0.08,
+            time_limit=30,
+            cost_params={"late_penalty_per_min": 10},
+        )
+        assert result == []
 
 
 class TestSolveWithMultipleStrategiesIntegration:

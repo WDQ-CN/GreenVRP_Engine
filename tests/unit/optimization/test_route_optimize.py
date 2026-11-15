@@ -3,6 +3,7 @@
 """
 
 import copy
+from unittest.mock import patch
 
 import pytest
 
@@ -11,6 +12,7 @@ from optimization.route_optimize import (
     check_time_window_feasibility,
     optimize_single_route,
     post_process_solution,
+    refresh_route_timing,
     two_opt_swap,
 )
 from tests.fixtures.customers import (
@@ -206,6 +208,37 @@ class TestOptimizeSingleRoute:
         # 应该有改进
         assert result["optimized_distance"] <= result["original_distance"]
 
+    def test_or_opt_keeps_depot_at_route_ends(self):
+        """Or-opt 只能把客户段插在起点仓和返程仓之间。"""
+        stops = [
+            {"node": 0, "customer_id": 0, "customer_name": "仓",
+             "lat": 39.90, "lon": 116.40, "demand": 0, "service_time": 0,
+             "tw_earliest": 480, "arrival_time": 480,
+             "late_minutes": 0, "is_late": False},
+            {"node": 1, "customer_id": 1, "customer_name": "A",
+             "lat": 39.90, "lon": 116.50, "demand": 10, "service_time": 20,
+             "tw_earliest": 480, "tw_latest": 900,
+             "arrival_time": 482, "late_minutes": 0, "is_late": False},
+            {"node": 2, "customer_id": 2, "customer_name": "B",
+             "lat": 39.90, "lon": 116.30, "demand": 10, "service_time": 20,
+             "tw_earliest": 480, "tw_latest": 900,
+             "arrival_time": 528, "late_minutes": 0, "is_late": False},
+            {"node": 3, "customer_id": 3, "customer_name": "C",
+             "lat": 39.95, "lon": 116.40, "demand": 10, "service_time": 20,
+             "tw_earliest": 480, "tw_latest": 900,
+             "arrival_time": 565, "late_minutes": 0, "is_late": False},
+            {"node": 0, "customer_id": None, "customer_name": "仓·返程",
+             "lat": 39.90, "lon": 116.40, "demand": 0, "service_time": 0,
+             "arrival_time": 585},
+        ]
+        result = optimize_single_route(stops, speed_kmh=40, capacity=800)
+        optimized = result["stops"]
+
+        assert result["iterations"] > 0
+        assert optimized[0]["node"] == 0
+        assert optimized[-1]["node"] == 0
+        assert all(stop["node"] != 0 for stop in optimized[1:-1])
+
     def test_preserves_feasibility(self):
         """优化后不应违反时间窗。"""
         stops = [
@@ -274,3 +307,140 @@ class TestPostProcessSolution:
         for route in result["routes"]:
             assert route["distance_km"] >= 0
         assert result["total_distance"] >= 0
+
+    def test_refresh_route_timing_recomputes_late(self):
+        """刷新路线时刻时必须重算到达/离开/迟到/总时长。"""
+        stops = [
+            {"node": 0, "customer_id": 0, "customer_name": "仓",
+             "lat": 39.90, "lon": 116.40, "demand": 0, "service_time": 0,
+             "tw_earliest": 480, "arrival_time": 480,
+             "late_minutes": 0, "is_late": False},
+            {"node": 1, "customer_id": 1, "customer_name": "A",
+             "lat": 39.90, "lon": 116.50, "demand": 10, "service_time": 20,
+             "tw_earliest": 480, "tw_latest": 520,
+             "arrival_time": 482, "late_minutes": 0, "is_late": False},
+            {"node": 2, "customer_id": 2, "customer_name": "B",
+             "lat": 39.90, "lon": 116.30, "demand": 10, "service_time": 20,
+             "tw_earliest": 480, "tw_latest": 540,
+             "arrival_time": 528, "late_minutes": 0, "is_late": False},
+            {"node": 3, "customer_id": 3, "customer_name": "C",
+             "lat": 39.95, "lon": 116.40, "demand": 10, "service_time": 20,
+             "tw_earliest": 480, "tw_latest": 900,
+             "arrival_time": 565, "late_minutes": 0, "is_late": False},
+            {"node": 0, "customer_id": None, "customer_name": "仓·返程",
+             "lat": 39.90, "lon": 116.40, "demand": 0, "service_time": 0,
+             "arrival_time": 585},
+        ]
+        route = {
+            "vehicle_id": 0,
+            "vehicle_type": "4.2m",
+            "vehicle_color": "#84cc16",
+            "capacity": 800,
+            "stops": copy.deepcopy(stops),
+            "distance_km": 999.0,
+            "total_demand": 30,
+            "total_time_min": 0,
+            "late_minutes": 0,
+        }
+        late = refresh_route_timing(
+            route, {"4.2m": {"speed_kmh": 40, "capacity": 800}}
+        )
+
+        expected = calculate_arrival_times(
+            route["stops"],
+            40,
+            start_time=route["stops"][0]["arrival_time"],
+        )
+        expected_late = sum(
+            max(0, stop["arrival_time"] - stop["tw_latest"])
+            for stop in expected
+            if stop["node"] != 0 and stop.get("tw_latest") is not None
+        )
+        assert expected_late > 0
+        assert late == expected_late
+        assert route["late_minutes"] == expected_late
+        assert route["stops"][-1]["node"] == 0
+        assert "arrival_time" in route["stops"][-1]
+
+        for stop, expected_stop in zip(route["stops"], expected):
+            assert stop["arrival_time"] == expected_stop["arrival_time"]
+            assert stop["departure_time"] == expected_stop["departure_time"]
+            if stop["node"] != 0:
+                assert stop["late_minutes"] == max(
+                    0, expected_stop["arrival_time"] - expected_stop["tw_latest"]
+                )
+
+        assert route["total_time_min"] == (
+            route["stops"][-1]["arrival_time"]
+            - route["stops"][0]["arrival_time"]
+        )
+
+    def test_skips_inter_route_optimization_for_large_solutions(self):
+        """客户站点超过阈值时跳过昂贵的路线间搜索。"""
+        routes = []
+        for index in range(61):
+            routes.append({
+                "vehicle_id": index,
+                "vehicle_type": "4.2m",
+                "vehicle_color": "#1f77b4",
+                "capacity": 800,
+                "stops": [
+                    {"node": 0, "lat": 39.90, "lon": 116.40, "demand": 0,
+                     "service_time": 0, "tw_earliest": 480,
+                     "arrival_time": 480, "late_minutes": 0, "is_late": False},
+                    {"node": index + 1, "lat": 39.91 + index * 0.001,
+                     "lon": 116.41, "demand": 1, "service_time": 10,
+                     "tw_earliest": 480, "tw_latest": 960,
+                     "arrival_time": 490, "late_minutes": 0, "is_late": False},
+                    {"node": 0, "lat": 39.90, "lon": 116.40, "demand": 0,
+                     "service_time": 0, "tw_earliest": 480,
+                     "arrival_time": 500},
+                ],
+                "distance_km": 1.0,
+                "total_demand": 1,
+                "total_time_min": 20,
+                "late_minutes": 0,
+            })
+        solution = {
+            "routes": routes,
+            "total_distance": 61.0,
+            "vehicles_used": {"4.2m": 61},
+            "total_late_minutes": 0,
+            "solution_status": "SUCCESS",
+        }
+
+        with patch(
+            "optimization.route_optimize._run_relocate_phase"
+        ) as relocate, patch(
+            "optimization.route_optimize._run_exchange_phase"
+        ) as exchange:
+            result = post_process_solution(solution, get_test_vehicle_config())
+
+        relocate.assert_not_called()
+        exchange.assert_not_called()
+        assert len(result["routes"]) == 61
+        assert sum(result["vehicles_used"].values()) == 61
+
+    def test_removes_empty_routes(self):
+        """空路线不应计入车辆使用。"""
+        solution = get_minimal_solution()
+        solution["routes"].append({
+            "vehicle_id": 1,
+            "vehicle_type": "4.2m",
+            "vehicle_color": "#1f77b4",
+            "capacity": 800,
+            "stops": [
+                {"node": 0, "lat": 39.9042, "lon": 116.4074, "demand": 0,
+                 "service_time": 0, "tw_earliest": 480},
+                {"node": 0, "lat": 39.9042, "lon": 116.4074, "demand": 0,
+                 "service_time": 0, "tw_earliest": 480},
+            ],
+            "distance_km": 0,
+            "total_demand": 0,
+            "total_time_min": 0,
+            "late_minutes": 0,
+        })
+        result = post_process_solution(solution, get_test_vehicle_config())
+
+        assert len(result["routes"]) == 1
+        assert sum(result["vehicles_used"].values()) == 1

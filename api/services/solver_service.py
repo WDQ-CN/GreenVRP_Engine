@@ -22,6 +22,7 @@ from config.vehicles import DEFAULT_VEHICLE_CONFIG
 from core import (
     GreenVRPSolver,
     calculate_green_cost,
+    refine_solution_with_load_ratios,
     solve_with_multiple_strategies,
 )
 from core.solver import solve_with_multiple_strategies_parallel
@@ -85,6 +86,7 @@ class SolverService:
                     vehicle_config=config,
                     time_penalty_per_min=solver_params.get("late_penalty_per_min", 10.0),
                     time_limit=time_limit,
+                    cost_params=solver_params,
                 )
             except Exception as e:
                 # 回退到串行模式
@@ -93,6 +95,7 @@ class SolverService:
                     vehicle_config=config,
                     time_penalty_per_min=solver_params.get("late_penalty_per_min", 10.0),
                     time_limit=time_limit,
+                    cost_params=solver_params,
                 )
         elif use_multi_strategy:
             solution = solve_with_multiple_strategies(
@@ -100,6 +103,7 @@ class SolverService:
                 vehicle_config=config,
                 time_penalty_per_min=solver_params.get("late_penalty_per_min", 10.0),
                 time_limit=time_limit,
+                cost_params=solver_params,
             )
         else:
             solver = GreenVRPSolver(
@@ -107,8 +111,21 @@ class SolverService:
                 vehicle_config=config,
                 time_penalty_per_min=solver_params.get("late_penalty_per_min", 10.0),
                 search_time_limit=time_limit,
+                fuel_price=solver_params.get("fuel_price", 7.5),
+                carbon_price=solver_params.get("carbon_price", 0.08),
             )
             solution = solver.solve()
+            solution = refine_solution_with_load_ratios(
+                solution,
+                customers_df,
+                config,
+                time_penalty_per_min=solver_params.get("late_penalty_per_min", 10.0),
+                fuel_price=solver_params.get("fuel_price", 7.5),
+                carbon_price=solver_params.get("carbon_price", 0.08),
+                time_limit=time_limit,
+                cost_params=solver_params,
+                post_process_stage1=True,
+            )
 
         # 计算成本
         cost_result = calculate_green_cost(solution, config, solver_params)

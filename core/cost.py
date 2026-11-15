@@ -25,8 +25,15 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import numpy as np
 
 from data_types.cost import CostDict
-from config.constants import DIESEL_CO2_FACTOR
+from config.constants import (
+    DIESEL_CO2_FACTOR,
+    FUEL_EMPTY_LOAD_RATIO,
+    FUEL_FULL_LOAD_RATIO,
+    WORK_DAY_START_MIN,
+)
 from exceptions.errors import CostCalculationError, ValidationError
+from utils.geo import haversine_distance
+from utils.time_profile import fuel_speed_factor, speed_multiplier, travel_time_minutes
 
 # 默认碳交易价格（元/kg）
 DEFAULT_CARBON_PRICE: float = 0.08
@@ -47,6 +54,9 @@ class VehicleCostParams:
     fuel_coefficient: float
     # 预计算的碳排放系数（油耗/100 * 2.63）
     carbon_coefficient: float
+    capacity: float = 0.0
+    fuel_empty_per_100km: float = 0.0
+    fuel_full_per_100km: float = 0.0
 
 
 def _build_vehicle_params(
@@ -68,16 +78,34 @@ def _build_vehicle_params(
         fuel_per_100km = config.get("fuel_per_100km", 12)
         fixed_cost = config.get("fixed_cost", 0)
         speed_kmh = config.get("speed_kmh", 40)
+        capacity = config.get("capacity", 800)
 
         # 类型安全检查：确保数值类型
         try:
             fuel_per_100km = float(fuel_per_100km)
             fixed_cost = float(fixed_cost)
             speed_kmh = float(speed_kmh)
+            capacity = float(capacity)
         except (TypeError, ValueError):
             fuel_per_100km = 12.0
             fixed_cost = 0.0
             speed_kmh = 40.0
+            capacity = 800.0
+
+        fuel_empty = config.get(
+            "fuel_empty_per_100km",
+            fuel_per_100km * FUEL_EMPTY_LOAD_RATIO,
+        )
+        fuel_full = config.get(
+            "fuel_full_per_100km",
+            fuel_per_100km * FUEL_FULL_LOAD_RATIO,
+        )
+        try:
+            fuel_empty = float(fuel_empty)
+            fuel_full = float(fuel_full)
+        except (TypeError, ValueError):
+            fuel_empty = fuel_per_100km * FUEL_EMPTY_LOAD_RATIO
+            fuel_full = fuel_per_100km * FUEL_FULL_LOAD_RATIO
 
         params[v_type] = VehicleCostParams(
             vehicle_type=v_type,
@@ -86,6 +114,9 @@ def _build_vehicle_params(
             speed_kmh=speed_kmh,
             fuel_coefficient=fuel_per_100km / 100.0,
             carbon_coefficient=fuel_per_100km / 100.0 * DIESEL_CO2_FACTOR,
+            capacity=max(capacity, 1.0),
+            fuel_empty_per_100km=max(fuel_empty, 0.0),
+            fuel_full_per_100km=max(fuel_full, 0.0),
         )
     return params
 
@@ -174,7 +205,10 @@ def _calculate_waiting_time_vectorized(stops: List[Dict[str, Any]]) -> float:
 
     # 提取数组
     nodes = np.array([s.get("node", 0) for s in stops])
-    arrivals = np.array([s.get("arrival_time", 0) for s in stops])
+    arrivals = np.array([
+        s.get("raw_arrival_time", s.get("arrival_time", 0)) or 0
+        for s in stops
+    ])
     tw_earliest = np.array([s.get("tw_earliest", 0) for s in stops])
 
     # 过滤客户节点（node > 0）
@@ -185,6 +219,107 @@ def _calculate_waiting_time_vectorized(stops: List[Dict[str, Any]]) -> float:
     # 向量化计算等待时间
     waiting_times = np.maximum(0, tw_earliest[mask] - arrivals[mask])
     return float(np.sum(waiting_times))
+
+
+def _fuel_per_100km_at_load(
+    v_params: VehicleCostParams, load_ratio: float
+) -> float:
+    """按剩余载重率在空载/满载油耗之间线性插值。"""
+    ratio = min(1.0, max(0.0, load_ratio))
+    return v_params.fuel_empty_per_100km + (
+        v_params.fuel_full_per_100km - v_params.fuel_empty_per_100km
+    ) * ratio
+
+
+def _calc_route_energy_and_time(
+    route: Dict[str, Any],
+    v_params: VehicleCostParams,
+) -> tuple:
+    """按逐段剩余载重和时段速度计算燃油消耗与行驶时间。"""
+    distance_km = route.get("distance_km", 0)
+    try:
+        distance_km = float(distance_km)
+    except (TypeError, ValueError):
+        distance_km = 0.0
+
+    stops = route.get("stops")
+    if not isinstance(stops, (list, tuple)) or len(stops) < 2:
+        return (
+            distance_km * v_params.fuel_coefficient,
+            distance_km / max(v_params.speed_kmh, 0.1) * 60.0,
+        )
+
+    for stop in stops:
+        if not isinstance(stop, dict) or "lat" not in stop or "lon" not in stop:
+            return (
+                distance_km * v_params.fuel_coefficient,
+                distance_km / max(v_params.speed_kmh, 0.1) * 60.0,
+            )
+
+    capacity = route.get("capacity", v_params.capacity)
+    try:
+        capacity = float(capacity)
+    except (TypeError, ValueError):
+        capacity = v_params.capacity
+    capacity = max(capacity, 1.0)
+
+    total_demand = sum(
+        float(stop.get("demand", 0) or 0)
+        for stop in stops
+        if (stop.get("node") or 0) > 0
+    )
+    if total_demand <= 0:
+        return (
+            distance_km * v_params.fuel_coefficient,
+            distance_km / max(v_params.speed_kmh, 0.1) * 60.0,
+        )
+
+    load = total_demand
+    clock = float(
+        stops[0].get("arrival_time", WORK_DAY_START_MIN)
+        or WORK_DAY_START_MIN
+    )
+    fuel_liters = 0.0
+    driving_minutes = 0.0
+
+    for index in range(len(stops) - 1):
+        from_stop = stops[index]
+        to_stop = stops[index + 1]
+
+        if (from_stop.get("node") or 0) > 0:
+            load = max(0.0, load - float(from_stop.get("demand", 0) or 0))
+
+        leg_km = haversine_distance(
+            from_stop["lat"],
+            from_stop["lon"],
+            to_stop["lat"],
+            to_stop["lon"],
+        )
+        multiplier = speed_multiplier(clock)
+        fuel_per_100km = (
+            _fuel_per_100km_at_load(v_params, load / capacity)
+            * fuel_speed_factor(multiplier)
+        )
+        fuel_liters += leg_km * fuel_per_100km / 100.0
+        travel = travel_time_minutes(leg_km, clock, v_params.speed_kmh)
+        driving_minutes += travel
+
+        arrival = clock + travel
+        earliest = float(to_stop.get("tw_earliest", 0) or 0)
+        service_time = float(
+            to_stop.get("service_time", to_stop.get("service_time_min", 0)) or 0
+        )
+        clock = max(arrival, earliest) + service_time
+
+    return fuel_liters, driving_minutes
+
+
+def _calc_route_fuel_liters(
+    route: Dict[str, Any],
+    v_params: VehicleCostParams,
+) -> float:
+    """按每段剩余载重和时段速度计算路线燃油消耗（升）。"""
+    return _calc_route_energy_and_time(route, v_params)[0]
 
 
 def _calc_route_transport_costs(
@@ -209,17 +344,11 @@ def _calc_route_transport_costs(
         if v_params is None:
             continue
 
-        distance_km = route.get("distance_km", 0)
-        try:
-            distance_km = float(distance_km)
-        except (TypeError, ValueError):
-            distance_km = 0.0
-
-        fuel_consumed = distance_km * v_params.fuel_coefficient
+        fuel_consumed, driving_time = _calc_route_energy_and_time(
+            route, v_params
+        )
         transport_cost += fuel_consumed * fuel_price
-        carbon_emission_kg += distance_km * v_params.carbon_coefficient
-
-        driving_time = (distance_km / max(v_params.speed_kmh, 0.1)) * 60
+        carbon_emission_kg += fuel_consumed * DIESEL_CO2_FACTOR
         total_driving_time_min += driving_time
 
         stops = route.get("stops")

@@ -552,6 +552,8 @@ def execute_solve():
                 vehicle_config=vehicle_config,
                 time_penalty_per_min=params["late_penalty_per_min"],
                 search_time_limit=params["search_time_limit"],
+                fuel_price=params["fuel_price"],
+                carbon_price=params["carbon_price"],
             )
 
             status_placeholder.text("正在求解最优路径...")
@@ -564,6 +566,7 @@ def execute_solve():
                     vehicle_config=vehicle_config,
                     time_penalty_per_min=params["late_penalty_per_min"],
                     time_limit=params["search_time_limit"],
+                    cost_params=params,
                 )
             else:
                 solution = solver.solve()

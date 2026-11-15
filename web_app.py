@@ -904,6 +904,8 @@ def main():
                         vehicle_config=vehicle_config,
                         time_penalty_per_min=late_penalty,
                         search_time_limit=time_limit,
+                        fuel_price=params["fuel_price"],
+                        carbon_price=params["carbon_price"],
                     )
 
                     status_text.text("正在求解最优路径...")
@@ -916,6 +918,7 @@ def main():
                             vehicle_config=vehicle_config,
                             time_penalty_per_min=late_penalty,
                             time_limit=time_limit,
+                            cost_params=params,
                         )
                     else:
                         solution = solver.solve()

@@ -17,7 +17,13 @@ class VehicleConfigDict(TypedDict, total=False):
     """固定成本（元）"""
 
     fuel_per_100km: float
-    """油耗（升/100公里）"""
+    """油耗（升/100公里，50% 载重基准）"""
+
+    fuel_empty_per_100km: float
+    """空载油耗（升/100公里，可选）"""
+
+    fuel_full_per_100km: float
+    """满载油耗（升/100公里，可选）"""
 
     speed_kmh: float
     """平均时速（公里/小时）"""
